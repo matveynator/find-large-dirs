@@ -70,9 +70,6 @@ Other platforms and architectures? Don’t worry, we’ve got you covered. See t
 
 Here is the table with **direct download links** for all available platforms and architectures.
 
----
-# **Supported Platforms and Architectures**
-
 | **Operating System** | **Architectures and Download Links** |
 |-----------------------|--------------------------------------|
 | ![Linux](https://edent.github.io/SuperTinyIcons/images/svg/linux.svg) **Linux** | [amd64](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/amd64/find-large-dirs), [arm64](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/arm64/find-large-dirs), [arm](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/arm/find-large-dirs), [386](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/386/find-large-dirs), [ppc64](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/ppc64/find-large-dirs), [ppc64le](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/ppc64le/find-large-dirs), [riscv64](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/riscv64/find-large-dirs), [loong64](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/loong64/find-large-dirs), [mips](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/mips/find-large-dirs), [mipsle](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/mipsle/find-large-dirs), [mips64](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/mips64/find-large-dirs), [mips64le](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/mips64le/find-large-dirs), [s390x](https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/s390x/find-large-dirs) |
