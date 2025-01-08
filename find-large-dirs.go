@@ -2,8 +2,10 @@ package main
 
 import (
     "bufio"
+    "container/list"
     "flag"
     "fmt"
+    "io/ioutil"
     "os"
     "path/filepath"
     "sort"
@@ -17,33 +19,21 @@ import (
 // Program version
 var version = "dev"
 
-// FolderSize holds info about a folder:
-// Path    - the folder path
-// Size    - total file size in bytes
-// Skipped - true if the folder was skipped (time threshold)
+// FolderSize holds info about a folder
 type FolderSize struct {
     Path    string
     Size    int64
     Skipped bool
 }
 
-// NetworkMount holds info about a network mount:
-// MountPoint  - the mount path
-// FsType      - e.g. "nfs", "cifs", "dav"
-// SizeBytes   - total capacity
-// UsedBytes   - used space
-// FreeBytes   - free space
-// DisplayName - e.g. "Network FS (nfs)"
+// NetworkMount holds info about a network filesystem
 type NetworkMount struct {
     MountPoint  string
     FsType      string
-    SizeBytes   uint64
-    UsedBytes   uint64
-    FreeBytes   uint64
     DisplayName string
 }
 
-// formatSize converts bytes to a human-readable string (GB, MB, KB).
+// formatSize converts bytes to a human-readable string.
 func formatSize(size int64) string {
     switch {
     case size >= 1<<30:
@@ -55,7 +45,7 @@ func formatSize(size int64) string {
     }
 }
 
-// formatSizeUint64 is the same but for uint64.
+// formatSizeUint64 for uint64
 func formatSizeUint64(size uint64) string {
     switch {
     case size >= 1<<30:
@@ -67,7 +57,15 @@ func formatSizeUint64(size uint64) string {
     }
 }
 
-// isExcluded checks whether a directory should be skipped (e.g., /proc, /sys, /dev).
+// shortenPath truncates the path for display so it won't wrap too much.
+func shortenPath(path string, maxLen int) string {
+    if len(path) <= maxLen {
+        return path
+    }
+    return path[:maxLen-3] + "..."
+}
+
+// isExcluded checks if a directory should be skipped (e.g. /proc, /sys).
 func isExcluded(path string) bool {
     base := filepath.Base(path)
     switch base {
@@ -78,7 +76,7 @@ func isExcluded(path string) bool {
     }
 }
 
-// getDiskUsageInfo returns total, free, and used bytes for the filesystem containing 'path'.
+// getDiskUsageInfo returns total, free, and used bytes for the filesystem.
 func getDiskUsageInfo(path string) (total, free, used uint64, err error) {
     var stat syscall.Statfs_t
     if err := syscall.Statfs(path, &stat); err != nil {
@@ -90,276 +88,318 @@ func getDiskUsageInfo(path string) (total, free, used uint64, err error) {
     return total, free, used, nil
 }
 
-// detectNetworkFileSystems reads /proc/mounts (Linux) to find network-like mounts
-// (nfs, cifs, dav, fuse, etc.). Returns a map of mountpoint->fstype plus a list of NetworkMount.
+// detectNetworkFileSystems reads /proc/mounts to find network-like FS
 func detectNetworkFileSystems() (map[string]string, []NetworkMount, error) {
-    file, err := os.Open("/proc/mounts")
+    f, err := os.Open("/proc/mounts")
     if err != nil {
         return nil, nil, err
     }
-    defer file.Close()
+    defer f.Close()
 
-    netMap := map[string]string{}
+    netMap := make(map[string]string)
     var nets []NetworkMount
 
-    scanner := bufio.NewScanner(file)
+    scanner := bufio.NewScanner(f)
     for scanner.Scan() {
         line := scanner.Text()
-        parts := strings.Fields(line)
-        if len(parts) < 3 {
+        fields := strings.Fields(line)
+        if len(fields) < 3 {
             continue
         }
-        mountPoint := parts[1]
-        fsType := parts[2]
+        mountPoint := fields[1]
+        fsType := fields[2]
 
-        // Check if it's a known "network-like" FS
-        // e.g., nfs, cifs, smb, sshfs, ftp, http, dav, fuse...
+        // Check if it's a "network-like" FS
         if strings.Contains(fsType, "nfs") ||
             strings.Contains(fsType, "cifs") ||
             strings.Contains(fsType, "smb") ||
             strings.Contains(fsType, "sshfs") ||
             strings.Contains(fsType, "ftp") ||
             strings.Contains(fsType, "http") ||
-            strings.Contains(fsType, "dav") ||
-            strings.Contains(fsType, "fuse") {
-            // Attempt to get its size info
-            t, f, u, errStat := getDiskUsageInfo(mountPoint)
-            if errStat == nil {
-                // Skip displaying if total=0 (empty FS)
-                if t == 0 {
-                    // We still add it to netMap so we do NOT walk it,
-                    // but won't add it to the final 'nets' slice for display
-                    netMap[mountPoint] = fsType
-                    continue
-                }
-                netMap[mountPoint] = fsType
-                nets = append(nets, NetworkMount{
-                    MountPoint:  mountPoint,
-                    FsType:      fsType,
-                    SizeBytes:   t,
-                    UsedBytes:   u,
-                    FreeBytes:   f,
-                    DisplayName: fmt.Sprintf("Network FS (%s)", fsType),
-                })
-            } else {
-                // If Statfs fails, mark it anyway so we skip walking it,
-                // but do not display
-                netMap[mountPoint] = fsType
-            }
+            strings.Contains(fsType, "dav") {
+            netMap[mountPoint] = fsType
+            nets = append(nets, NetworkMount{
+                MountPoint:  mountPoint,
+                FsType:      fsType,
+                DisplayName: fmt.Sprintf("Network FS (%s)", fsType),
+            })
         }
     }
-
     return netMap, nets, nil
 }
 
-// walkDirectory recursively sums file sizes under 'path'.
-// If scanning takes longer than slowThreshold, returns Skipped=true.
-func walkDirectory(path string, slowThreshold time.Duration, start time.Time, networkFS map[string]string) (int64, bool) {
-    var totalSize int64
+// bfsCountDirs counts how many directories we'll process, for progress.
+func bfsCountDirs(root string, netMap map[string]string) int {
+    count := 0
+    queue := list.New()
+    queue.PushBack(root)
 
-    err := filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
-        if err != nil {
-            return filepath.SkipDir
-        }
-        // If p is a network mount, skip
-        if _, ok := networkFS[p]; ok {
-            return filepath.SkipDir
-        }
-        // If p is excluded (system dirs)
-        if isExcluded(p) {
-            return filepath.SkipDir
-        }
-        // Check time
-        if time.Since(start) > slowThreshold {
-            return fmt.Errorf("slow directory")
-        }
-        // Sum file size
-        if !info.IsDir() {
-            totalSize += info.Size()
-        }
-        return nil
-    })
-    if err != nil {
-        return totalSize, true
-    }
-    return totalSize, false
-}
+    for queue.Len() > 0 {
+        e := queue.Front()
+        queue.Remove(e)
+        dirPath := e.Value.(string)
 
-// listAllDirs collects all directories under 'root' (recursively),
-// excluding any known network mount points.
-func listAllDirs(root string, networkFS map[string]string) []string {
-    var dirs []string
-    filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-        if err != nil {
-            return nil
+        // Skip if network mount or excluded
+        if _, ok := netMap[dirPath]; ok {
+            continue
         }
-        if info.IsDir() {
-            // If p is a network mount, skip
-            if _, ok := networkFS[p]; !ok {
-                dirs = append(dirs, p)
+        if isExcluded(dirPath) {
+            continue
+        }
+        count++
+
+        entries, err := ioutil.ReadDir(dirPath)
+        if err != nil {
+            continue
+        }
+        for _, fi := range entries {
+            if fi.IsDir() {
+                queue.PushBack(filepath.Join(dirPath, fi.Name()))
             }
         }
-        return nil
-    })
-    return dirs
+    }
+    return count
 }
 
-// findAllSubfolders walks all directories to compute their sizes.
-// If a directory is too slow, we mark it Skipped.
-func findAllSubfolders(root string, progress *int32, totalItems int32, slowThreshold time.Duration, networkFS map[string]string) []FolderSize {
-    var subfolders []FolderSize
-    dirs := listAllDirs(root, networkFS)
+// bfsComputeSizes does one BFS pass for minimal overhead.
+func bfsComputeSizes(
+    root string,
+    netMap map[string]string,
+    slowThreshold time.Duration,
+    opChan chan<- string,
+    progress *int32,
+    totalDirs int32,
+) []FolderSize {
 
-    for _, dir := range dirs {
+    resultsMap := make(map[string]*FolderSize)
+    queue := list.New()
+    queue.PushBack(root)
+
+    resultsMap[root] = &FolderSize{Path: root, Size: 0, Skipped: false}
+
+    for queue.Len() > 0 {
+        e := queue.Front()
+        queue.Remove(e)
+        dirPath := e.Value.(string)
+
+        // Skip network mount or excluded
+        if _, ok := netMap[dirPath]; ok {
+            resultsMap[dirPath] = &FolderSize{Path: dirPath, Skipped: true}
+            atomic.AddInt32(progress, 1)
+            continue
+        }
+        if isExcluded(dirPath) {
+            resultsMap[dirPath] = &FolderSize{Path: dirPath, Skipped: true}
+            atomic.AddInt32(progress, 1)
+            continue
+        }
+
+        // Send operation name
+        select {
+        case opChan <- "Scanning " + dirPath:
+        default:
+        }
+
         start := time.Now()
-        size, skipped := walkDirectory(dir, slowThreshold, start, networkFS)
-        subfolders = append(subfolders, FolderSize{
-            Path:    dir,
-            Size:    size,
-            Skipped: skipped,
-        })
+        var localSize int64
+        skipDir := false
+
+        entries, err := ioutil.ReadDir(dirPath)
+        if err != nil {
+            skipDir = true
+        } else {
+            for _, fi := range entries {
+                if time.Since(start) > slowThreshold {
+                    skipDir = true
+                    break
+                }
+                if !fi.IsDir() {
+                    localSize += fi.Size()
+                }
+            }
+        }
+
+        res, found := resultsMap[dirPath]
+        if !found {
+            res = &FolderSize{Path: dirPath}
+            resultsMap[dirPath] = res
+        }
+        res.Size = localSize
+        res.Skipped = skipDir
+
+        if !skipDir && err == nil {
+            // Enqueue subdirs
+            for _, fi := range entries {
+                if fi.IsDir() {
+                    subPath := filepath.Join(dirPath, fi.Name())
+                    if _, ok := resultsMap[subPath]; !ok {
+                        resultsMap[subPath] = &FolderSize{Path: subPath}
+                    }
+                    queue.PushBack(subPath)
+                }
+            }
+        }
+
         atomic.AddInt32(progress, 1)
     }
 
-    // Sort descending by size
-    sort.Slice(subfolders, func(i, j int) bool {
-        return subfolders[i].Size > subfolders[j].Size
+    resultSlice := make([]FolderSize, 0, len(resultsMap))
+    for _, fs := range resultsMap {
+        resultSlice = append(resultSlice, *fs)
+    }
+
+    sort.Slice(resultSlice, func(i, j int) bool {
+        return resultSlice[i].Size > resultSlice[j].Size
     })
-    return subfolders
+    return resultSlice
 }
 
 func main() {
-    // Command-line flags
     flag.Usage = func() {
         fmt.Println("Usage: find-large-dirs [directory] [--top <N>] [--slow-threshold <duration>] [--help] [--version]")
-        fmt.Println("Recursively scan the given directory and show the largest subdirectories.")
-        fmt.Println("If no directory is provided, defaults to '/'.")
-        fmt.Println("Example: find-large-dirs /home/user --top 10 --slow-threshold=3s")
+        fmt.Println("Single-pass BFS, skipping network mounts and system dirs. Shows one-line progress.")
     }
-    help := flag.Bool("help", false, "Show help")
-    top := flag.Int("top", 20, "Number of top largest folders to display")
-    slowThreshold := flag.Duration("slow-threshold", 2*time.Second, "Max duration before skipping a directory")
-    showVersion := flag.Bool("version", false, "Show program version")
+    helpFlag := flag.Bool("help", false, "Show help")
+    topFlag := flag.Int("top", 30, "Number of top largest folders to display")
+    slowFlag := flag.Duration("slow-threshold", 2*time.Second, "Max time before skipping a directory")
+    versionFlag := flag.Bool("version", false, "Show version")
     flag.Parse()
 
-    if *help {
+    if *helpFlag {
         flag.Usage()
         return
     }
-    if *showVersion {
+    if *versionFlag {
         fmt.Printf("find-large-dirs version: %s\n", version)
         return
     }
 
-    // If no argument, default to "/"
-    path := "/"
+    rootPath := "/"
     if flag.NArg() > 0 {
-        path = flag.Arg(0)
+        rootPath = flag.Arg(0)
     }
 
-    // Detect network mounts first
-    networkFSMap, networkMounts, err := detectNetworkFileSystems()
+    // Detect network FS
+    netMap, netMounts, err := detectNetworkFileSystems()
     if err != nil {
-        fmt.Printf("Warning: could not detect network filesystems: %v\n", err)
+        fmt.Fprintf(os.Stderr, "Warning: could not detect network FS: %v\n", err)
     }
 
-    // Decide whether to show disk stats or folder stats
-    showDiskStats := false
-    if path == "/" {
-        showDiskStats = true
-    } else {
-        // For simplicity, only root "/" shows disk usage.
-        showDiskStats = false
-    }
-
-    if showDiskStats {
-        total, free, used, err := getDiskUsageInfo(path)
+    // If root is "/", show disk info
+    if rootPath == "/" {
+        total, free, used, err := getDiskUsageInfo(rootPath)
         if err == nil {
-            fmt.Printf("Mount point: %s\n", path)
+            fmt.Printf("Mount point: %s\n", rootPath)
             fmt.Printf("Total: %s   Used: %s   Free: %s\n\n",
                 formatSizeUint64(total),
                 formatSizeUint64(used),
                 formatSizeUint64(free),
             )
         } else {
-            fmt.Printf("Could not retrieve disk info for %s\n\n", path)
+            fmt.Printf("Could not get disk info for '%s': %v\n\n", rootPath, err)
         }
     } else {
-        // If a specific folder was provided, compute its total size
+        // Quick top-level check
+        var quickSize int64
+        skipQuick := false
         start := time.Now()
-        folderSize, skipped := walkDirectory(path, *slowThreshold, start, networkFSMap)
-        if skipped {
-            fmt.Printf("Folder '%s': size calculation skipped (too slow)\n\n", path)
+
+        entries, err := ioutil.ReadDir(rootPath)
+        if err != nil {
+            skipQuick = true
         } else {
-            fmt.Printf("Folder '%s': %s\n\n", path, formatSize(folderSize))
+            for _, fi := range entries {
+                if time.Since(start) > *slowFlag {
+                    skipQuick = true
+                    break
+                }
+                if !fi.IsDir() {
+                    quickSize += fi.Size()
+                }
+            }
+        }
+        if skipQuick {
+            fmt.Printf("Folder '%s': size calculation skipped (timed out)\n\n", rootPath)
+        } else {
+            fmt.Printf("Folder '%s': ~%s (top-level only)\n\n", rootPath, formatSize(quickSize))
         }
     }
 
-    // Build the directory list for progress
-    dirs := listAllDirs(path, networkFSMap)
-    totalItems := int32(len(dirs))
+    // Count total dirs for progress
+    totalCount := bfsCountDirs(rootPath, netMap)
+    totalDirs := int32(totalCount)
     var progress int32
 
-    // Show progress in a separate goroutine
+    // Channels for operation and done
+    opChan := make(chan string, 1)
+    doneChan := make(chan bool)
+
+    // Progress goroutine
     go func() {
+        ticker := time.NewTicker(200 * time.Millisecond)
+        defer ticker.Stop()
+
+        var currentOp string
         for {
-            current := atomic.LoadInt32(&progress)
-            pct := 0.0
-            if totalItems > 0 {
-                pct = float64(current) / float64(totalItems) * 100
-            }
-            fmt.Printf("\rProgress: %.2f%%", pct)
-            time.Sleep(200 * time.Millisecond)
-            if current >= totalItems {
-                break
+            select {
+            case msg := <-opChan:
+                currentOp = msg
+            case <-ticker.C:
+                cur := atomic.LoadInt32(&progress)
+                pct := 0.0
+                if totalDirs > 0 {
+                    pct = float64(cur) / float64(totalDirs) * 100
+                }
+                // Erase line, move cursor to start
+                fmt.Printf("\r\033[K")
+
+                // Truncate path so it doesn't cause line wrapping
+                shortPath := shortenPath(currentOp, 60)
+                fmt.Printf("Progress: %.2f%% | %s", pct, shortPath)
+
+                if cur >= totalDirs {
+                    // Erase line at the end
+                    fmt.Printf("\r\033[K")
+                    doneChan <- true
+                    return
+                }
             }
         }
     }()
 
-    // Recursively compute all folders
-    subfolders := findAllSubfolders(path, &progress, totalItems, *slowThreshold, networkFSMap)
+    // BFS to compute sizes
+    resultFolders := bfsComputeSizes(rootPath, netMap, *slowFlag, opChan, &progress, totalDirs)
 
-    // New line after progress
+    // Wait for progress goroutine
+    <-doneChan
     fmt.Println()
 
-    // Print network filesystems (excluding 0-sized ones, already skipped)
-    if len(networkMounts) > 0 {
-        fmt.Println("Network filesystems detected:")
-        wNet := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-        // Header
-        fmt.Fprintf(wNet, "TYPE\tMOUNT POINT\tTOTAL\tUSED\tFREE\n")
-        for _, nm := range networkMounts {
-            fmt.Fprintf(wNet, "%s\t%s\t%s\t%s\t%s\n",
-                nm.DisplayName,
-                nm.MountPoint,
-                formatSizeUint64(nm.SizeBytes),
-                formatSizeUint64(nm.UsedBytes),
-                formatSizeUint64(nm.FreeBytes),
-            )
+    // Print network FS
+    if len(netMounts) > 0 {
+        fmt.Println("Network filesystems detected (skipped entirely):")
+        for _, nm := range netMounts {
+            fmt.Printf("  %s => %s\n", nm.DisplayName, nm.MountPoint)
         }
-        wNet.Flush()
         fmt.Println()
     }
 
-    // Print top N largest directories
-    fmt.Printf("Top %d largest directories in '%s':\n", *top, path)
+    // Print top N largest
+    fmt.Printf("Top %d largest directories in '%s':\n", *topFlag, rootPath)
     w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-
-    // We'll print columns: SIZE, PATH (and if skipped, append "(skipped)" to the path).
-    for i, folder := range subfolders {
-        if i >= *top {
+    count := 0
+    for _, fs := range resultFolders {
+        if count >= *topFlag {
             break
         }
-        displayPath := folder.Path
-        if folder.Skipped {
-            // Append "(skipped)" right after the path
-            displayPath += " (skipped)"
+        dp := fs.Path
+        if fs.Skipped {
+            dp += " (skipped)"
         }
-        // Example line:  "8.41 GB    /home/matvey/isotope-pathways (skipped)"
         fmt.Fprintf(w, "%-10s\t%-60s\n",
-            formatSize(folder.Size),
-            displayPath,
+            formatSize(fs.Size),
+            dp,
         )
+        count++
     }
     w.Flush()
 }
