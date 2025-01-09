@@ -4,6 +4,7 @@
 // - No "syscall" references, no OS-specific calls.
 // - Shows immediate progress, and partial results on interrupt (if signals are supported).
 // - Skips any duplication or network FS detection to stay universal.
+// - NEW: Calculates file-type proportions (e.g., 20% Images, 30% Video, etc.)
 
 package main
 
@@ -33,11 +34,13 @@ import (
 var version = "dev"
 
 // FolderSize represents each folder found, including its path, the accumulated
-// size of files *within that directory*, and a Skipped flag if we did not fully scan it.
+// size of files *within that directory*, a Skipped flag if not fully scanned,
+// and a map of file types to their total size for the directory (e.g. "Image" -> total bytes).
 type FolderSize struct {
-	Path    string
-	Size    int64
-	Skipped bool
+	Path      string
+	Size      int64
+	Skipped   bool
+	FileTypes map[string]int64 // e.g. {"Image": 12345, "Video": 67890, ...}
 }
 
 // progressUpdate is the structure sent through a channel to our progressReporter goroutine.
@@ -114,12 +117,127 @@ func isExcluded(path string, userExcludes []string) bool {
 	}
 }
 
+// classifyExtension categorizes a file based on its extension.
+// We group popular extensions into categories like "Image", "Video", "Archive", etc.
+// Anything not recognized falls under "Other".
+func classifyExtension(fileName string) string {
+	ext := strings.ToLower(filepath.Ext(fileName))
+
+	switch ext {
+	// Common image formats
+	case ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".raw", ".webp", ".heic", ".heif":
+		return "Image"
+
+	// Common video formats
+	case ".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".webm", ".m4v":
+		return "Video"
+
+	// Common audio formats
+	case ".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".wma":
+		return "Audio"
+
+	// Common archive/compressed formats
+	case ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz":
+		return "Archive"
+
+	// Common documents
+	case ".pdf", ".doc", ".docx", ".txt", ".rtf":
+		return "Document"
+
+	// Common executables/binaries (applications)
+	case ".exe", ".dll", ".so", ".bin", ".dmg", ".pkg", ".apk":
+		return "Application"
+
+	// Common code/extensions
+	case ".go", ".c", ".cpp", ".h", ".hpp", ".js", ".ts", ".py", ".java", ".sh", ".rb", ".php":
+		return "Code"
+
+	// Common log files (including rotated logs)
+	case ".log", ".trace", ".dump", ".log.gz", ".log.bz2":
+		return "Log"
+
+	// Common database files
+	case ".sql", ".db", ".sqlite", ".sqlite3", ".mdb", ".accdb", ".ndb", ".frm", ".ibd":
+		return "Database"
+
+	// Common backup files
+	case ".bak", ".backup", ".bkp", ".ab":
+		return "Backup"
+
+	// Common disk image files
+	case ".iso", ".img", ".vhd", ".vhdx", ".vmdk", ".dsk":
+		return "Disk Image"
+
+	// Common configuration files
+	case ".conf", ".cfg", ".ini", ".yaml", ".yml", ".json", ".xml", ".toml":
+		return "Configuration"
+
+	// Common font files
+	case ".ttf", ".otf", ".woff", ".woff2", ".eot":
+		return "Font"
+
+	// Common web files
+	case ".html", ".htm", ".css", ".scss", ".less":
+		return "Web"
+
+	// Common spreadsheet formats
+	case ".ods", ".xls", ".xlsx", ".csv":
+		return "Spreadsheet"
+
+	// Common presentation formats
+	case ".odp", ".ppt", ".pptx":
+		return "Presentation"
+
+	// If not recognized, categorize as "Other"
+	default:
+		return "Other"
+	}
+}
+
+// formatFileTypeRatios produces a summary string like "20.00% Image, 30.00% Video, 50.00% Other"
+// given the map of file type sizes and the total directory size.
+// We list categories in descending order of size contribution.
+func formatFileTypeRatios(fileTypes map[string]int64, totalSize int64) string {
+	if totalSize == 0 {
+		return "No files"
+	}
+
+	// Create a slice of (category, size) pairs from the map.
+	var pairs []struct {
+		Cat  string
+		Size int64
+	}
+	for cat, sz := range fileTypes {
+		if sz > 0 {
+			pairs = append(pairs, struct {
+				Cat  string
+				Size int64
+			}{cat, sz})
+		}
+	}
+
+	// Sort the pairs by descending size.
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].Size > pairs[j].Size
+	})
+
+	// Build a comma-separated string of "percent% Category"
+	var parts []string
+	for _, p := range pairs {
+		percent := float64(p.Size) / float64(totalSize) * 100
+		parts = append(parts, fmt.Sprintf("%.2f%% %s", percent, p.Cat))
+	}
+
+	return strings.Join(parts, ", ")
+}
+
 /*
    ------------------------------------------------------------------------------------
    BFS SCANNING
    ------------------------------------------------------------------------------------
    We perform a single-threaded BFS to avoid overwhelming I/O. For each directory:
      - We sum up sizes of the *files* within that directory only.
+     - We also categorize each file by type (Image, Video, etc.) for that directory.
      - If scanning takes longer than 'slowThreshold', we mark that directory as Skipped.
      - We send progress updates to a separate goroutine through progChan so it can
        display progress in near real-time.
@@ -150,7 +268,7 @@ func bfsScan(
 	queue := list.New()
 	queue.PushBack(root)
 	// Make sure the root entry exists in results.
-	results[root] = &FolderSize{Path: root}
+	results[root] = &FolderSize{Path: root, FileTypes: make(map[string]int64)}
 
 BFSLOOP:
 	for queue.Len() > 0 {
@@ -193,9 +311,14 @@ BFSLOOP:
 					skipThis = true
 					break
 				}
-				// For each *file*, add its size to the localSize. We do not accumulate subdir sizes here.
+				// For each *file*, add its size to the localSize and update the file-type map.
 				if !fi.IsDir() {
-					localSize += fi.Size()
+					fileSize := fi.Size()
+					localSize += fileSize
+					// Classify the file extension.
+					fileCat := classifyExtension(fi.Name())
+					fEntry := ensureFolder(results, dirPath)
+					fEntry.FileTypes[fileCat] += fileSize
 				}
 			}
 		}
@@ -225,9 +348,7 @@ BFSLOOP:
 				if fi.IsDir() {
 					subPath := filepath.Join(dirPath, fi.Name())
 					// Ensure the sub-directory entry is in the results map.
-					if _, ok := results[subPath]; !ok {
-						results[subPath] = &FolderSize{Path: subPath}
-					}
+					_ = ensureFolder(results, subPath)
 					// Add the sub-directory to the BFS queue.
 					queue.PushBack(subPath)
 				}
@@ -253,7 +374,10 @@ BFSLOOP:
 func ensureFolder(m map[string]*FolderSize, path string) *FolderSize {
 	fs, ok := m[path]
 	if !ok {
-		fs = &FolderSize{Path: path}
+		fs = &FolderSize{
+			Path:      path,
+			FileTypes: make(map[string]int64),
+		}
 		m[path] = fs
 	}
 	return fs
@@ -317,7 +441,7 @@ func progressReporter(ctx context.Context, progChan <-chan progressUpdate, done 
    3) Set up context cancellation on interrupt (SIGINT).
    4) Start the progressReporter goroutine.
    5) Perform BFS scan in the main goroutine.
-   6) On completion, print the top N largest directories.
+   6) On completion, print the top N largest directories, including file-type proportions.
 */
 
 // main is the entry point of our program.
@@ -330,6 +454,7 @@ func main() {
 		fmt.Println("")
 		fmt.Println("Simple BFS across all subdirectories in one thread, prints immediate progress,")
 		fmt.Println("and partial results if interrupted. No OS-specific calls. Compiles on all platforms.")
+		fmt.Println("Now also shows file-type proportions in each directory.")
 	}
 
 	// Define command-line flags.
@@ -407,8 +532,13 @@ func main() {
 		if fs.Skipped {
 			note = " (skipped)"
 		}
-		// Print each directory's size, path, and a note if it was skipped.
+
+		// Print each directory's size, path, note, and then the file-type proportions.
+		// We indent the proportions line for clarity.
 		fmt.Fprintf(tw, "%-10s\t%s%s\n", formatSize(fs.Size), fs.Path, note)
+		ratioStr := formatFileTypeRatios(fs.FileTypes, fs.Size)
+		fmt.Fprintf(tw, "          \t -> File types: %s\n", ratioStr)
+
 		count++
 	}
 	tw.Flush()
