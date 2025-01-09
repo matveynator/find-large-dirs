@@ -22,6 +22,7 @@ package main
 import (
 	"container/list"
 	"context"
+	"encoding/json" // <- ADDED for JSON storage
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -261,6 +262,86 @@ func formatFileTypeRatios(fileTypes map[string]int64, totalSize int64) string {
 
 /*
    ------------------------------------------------------------------------------------
+   FUNCTIONS TO LOAD/SAVE PREVIOUS DATA (JSON)
+   ------------------------------------------------------------------------------------
+   We store previous run results in the user's home directory: ~/.find-large-dirs/db
+   It contains a list of (Path, Size) pairs. Then we can compute diffs at next run.
+*/
+
+type dbEntry struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+}
+
+type dbData struct {
+	Timestamp time.Time  `json:"timestamp"`
+	Entries   []dbEntry  `json:"entries"`
+}
+
+// getDbPath returns the path to the JSON file in ~/.find-large-dirs/db
+func getDbPath() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		// Fallback if for some reason we can't get the home directory
+		return "./find-large-dirs-db.json"
+	}
+	return filepath.Join(homeDir, ".find-large-dirs", "db.json")
+}
+
+// loadPreviousData loads a map of path->size and the timestamp from the JSON file if it exists.
+func loadPreviousData(dbPath string) (map[string]int64, time.Time, error) {
+	data := make(map[string]int64)
+	var timestamp time.Time
+
+	file, err := os.Open(dbPath)
+	if err != nil {
+		// If no file yet, just return empty map and zero time, no error.
+		return data, timestamp, nil
+	}
+	defer file.Close()
+
+	var db dbData
+	if err := json.NewDecoder(file).Decode(&db); err != nil {
+		return data, timestamp, nil
+	}
+
+	for _, e := range db.Entries {
+		data[e.Path] = e.Size
+	}
+	timestamp = db.Timestamp
+	return data, timestamp, nil
+}
+
+// saveCurrentData saves the current path->size data and the current timestamp to the JSON file.
+func saveCurrentData(dbPath string, folders []FolderSize) error {
+	// Ensure the directory ~/.find-large-dirs/ exists
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		return err
+	}
+
+	var entries []dbEntry
+	for _, fs := range folders {
+		entries = append(entries, dbEntry{Path: fs.Path, Size: fs.Size})
+	}
+
+	db := dbData{
+		Timestamp: time.Now(),
+		Entries:   entries,
+	}
+
+	out, err := os.Create(dbPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(db)
+}
+
+/*
+   ------------------------------------------------------------------------------------
    BFS SCANNING
    ------------------------------------------------------------------------------------
    We perform a single-threaded BFS to avoid overwhelming I/O. For each directory:
@@ -430,6 +511,7 @@ func progressReporter(ctx context.Context, progChan <-chan progressUpdate, done 
    4) Launch a goroutine for progressReporter.
    5) BFS-scan in the main goroutine.
    6) Print top N largest directories with file-type proportions (each category colored).
+   7) NEW: Load previous data, display diffs for top directories, save new data.
 */
 
 func main() {
@@ -471,6 +553,10 @@ func main() {
 		root = flag.Arg(0)
 	}
 
+	// Load previous data for comparison:
+	dbPath := getDbPath()
+	prevData, prevTimestamp, _ := loadPreviousData(dbPath)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
@@ -505,10 +591,28 @@ func main() {
 			note = " (skipped)"
 		}
 
+		// Calculate difference with previous run (if available)
+		diffStr := ""
+		if oldSize, found := prevData[fs.Path]; found && oldSize > 0 {
+			diffMB := float64(fs.Size-oldSize) / (1 << 20)
+			percent := 0.0
+			if oldSize != 0 {
+				percent = (diffMB / (float64(oldSize) / (1 << 20))) * 100
+			}
+			sign := "+"
+			if diffMB < 0 {
+				sign = "-"
+			}
+			if (diffMB != 0) || (percent != 0.0){
+				// Build a string like: (+12.34 MB, +5.67%)
+				diffStr = fmt.Sprintf(" (%s%.2f MB, %s%.2f%%)", sign, diffMB, sign, percent)
+			}
+		}
+
 		fmt.Fprintf(tw,
-			"%-12s\t%s%s%s%s\n",
+			"%-12s\t%s%s%s%s%s\n",
 			formatSize(fs.Size),
-			Bold, fs.Path, ColorReset, note,
+			Bold, fs.Path, ColorReset, note, diffStr,
 		)
 		ratioStr := formatFileTypeRatios(fs.FileTypes, fs.Size)
 		fmt.Fprintf(tw, "            \t -> File types: %s\n", ratioStr)
@@ -516,5 +620,16 @@ func main() {
 		count++
 	}
 	tw.Flush()
+
+	// Show time elapsed since last scan
+	if !prevTimestamp.IsZero() {
+		elapsed := time.Since(prevTimestamp).Round(time.Second)
+		fmt.Printf("\nTime since last scan: %s\n", elapsed)
+	}
+
+	// Save current data for next run
+	if err := saveCurrentData(dbPath, folders); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: unable to save data to %s: %v\n", dbPath, err)
+	}
 }
 
