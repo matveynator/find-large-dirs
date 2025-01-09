@@ -106,7 +106,7 @@ func getColorForCategory(cat string) string {
 	case "Code":
 		return ColorBlue
 	case "Log":
-		return ColorYellow
+		return ColorRed
 	case "Database":
 		return ColorMagenta
 	case "Backup":
@@ -192,11 +192,11 @@ func classifyExtension(fileName string) string {
 		return "Application"
 	case ".go", ".c", ".cpp", ".h", ".hpp", ".js", ".ts", ".py", ".java", ".sh", ".rb", ".php":
 		return "Code"
-	case ".log", ".trace", ".dump", ".log.gz", ".log.bz2":
+	case ".log", ".trace", ".log.gz", ".log.bz2":
 		return "Log"
-	case ".sql", ".db", ".sqlite", ".sqlite3", ".mdb", ".accdb", ".ndb", ".frm", ".ibd":
+	case ".sql", ".db", ".sqlite", ".sqlite3", ".mdb", ".accdb", ".ndb", ".frm", ".ibd", ".myd", ".myi", ".rdb", ".aof", ".wal", ".shm", ".journal":
 		return "Database"
-	case ".bak", ".backup", ".bkp", ".ab":
+	case ".bak", ".backup", ".bkp", ".ab", ".dump":
 		return "Backup"
 	case ".iso", ".img", ".vhd", ".vhdx", ".vmdk", ".dsk":
 		return "Disk Image"
@@ -264,7 +264,7 @@ func formatFileTypeRatios(fileTypes map[string]int64, totalSize int64) string {
    ------------------------------------------------------------------------------------
    FUNCTIONS TO LOAD/SAVE PREVIOUS DATA (JSON)
    ------------------------------------------------------------------------------------
-   We store previous run results in the user's home directory: ~/.find-large-dirs/db
+   We store previous run results in the user's home directory: ~/.find-large-dirs/db.json
    It contains a list of (Path, Size) pairs. Then we can compute diffs at next run.
 */
 
@@ -278,7 +278,7 @@ type dbData struct {
 	Entries   []dbEntry  `json:"entries"`
 }
 
-// getDbPath returns the path to the JSON file in ~/.find-large-dirs/db
+// getDbPath returns the path to the JSON file in ~/.find-large-dirs/db.json
 func getDbPath() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -315,7 +315,7 @@ func loadPreviousData(dbPath string) (map[string]int64, time.Time, error) {
 // saveCurrentData saves the current path->size data and the current timestamp to the JSON file.
 func saveCurrentData(dbPath string, folders []FolderSize) error {
 	// Ensure the directory ~/.find-large-dirs/ exists
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
 		return err
 	}
 
