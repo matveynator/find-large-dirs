@@ -315,7 +315,7 @@ func loadPreviousData(dbPath string) (map[string]int64, time.Time, error) {
 // saveCurrentData saves the current path->size data and the current timestamp to the JSON file.
 func saveCurrentData(dbPath string, folders []FolderSize) error {
 	// Ensure the directory ~/.find-large-dirs/ exists
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0750); err != nil {
 		return err
 	}
 
