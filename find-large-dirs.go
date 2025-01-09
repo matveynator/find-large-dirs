@@ -1,72 +1,66 @@
+// File: find-large-dirs.go
+//
+// A single-file BFS scanner that compiles on *all* Go platforms.
+// - No "syscall" references, no OS-specific calls.
+// - Shows immediate progress, partial results on interrupt (where signals exist).
+// - Skips any duplication or network FS detection to remain universal.
+
 package main
 
 import (
-    "bufio"
     "container/list"
     "context"
     "flag"
     "fmt"
     "io/ioutil"
     "os"
-    "os/exec"
     "os/signal"
     "path/filepath"
-    "runtime"
     "sort"
     "strings"
     "sync/atomic"
-    "syscall"
     "text/tabwriter"
     "time"
 )
 
 /*
-   GLOBAL
+   GLOBALS & DATA STRUCTURES
 */
 
+// Program version (can be set at build time, or default "dev")
 var version = "dev"
 
-// FolderSize — данные о размере конкретной папки.
+// FolderSize holds info about each folder: path + accumulated file size.
 type FolderSize struct {
-    Path      string
-    Size      int64
-    Skipped   bool
-    Duplicate bool // true, если (dev, inode) уже встречались
+    Path    string
+    Size    int64
+    Skipped bool
 }
 
-// NetworkMount — описание сетевого монтирования.
-type NetworkMount struct {
-    MountPoint  string
-    FsType      string
-    DisplayName string
+// progressUpdate is what we send through a channel to the progressReporter goroutine.
+type progressUpdate struct {
+    CurrentDir string
+    NumDirs    int64
+    BytesTotal int64
 }
 
 /*
-    UTILITY FUNCTIONS
+   UTILITIES
 */
 
-func formatSize(size int64) string {
+// formatSize converts bytes to a simple KB/MB/GB string.
+func formatSize(sz int64) string {
     switch {
-    case size >= 1<<30:
-        return fmt.Sprintf("%.2f GB", float64(size)/(1<<30))
-    case size >= 1<<20:
-        return fmt.Sprintf("%.2f MB", float64(size)/(1<<20))
+    case sz >= 1<<30:
+        return fmt.Sprintf("%.2f GB", float64(sz)/(1<<30))
+    case sz >= 1<<20:
+        return fmt.Sprintf("%.2f MB", float64(sz)/(1<<20))
     default:
-        return fmt.Sprintf("%d KB", size/(1<<10))
+        return fmt.Sprintf("%d KB", sz/(1<<10))
     }
 }
 
-func formatSizeUint64(size uint64) string {
-    switch {
-    case size >= 1<<30:
-        return fmt.Sprintf("%.2f GB", float64(size)/(1<<30))
-    case size >= 1<<20:
-        return fmt.Sprintf("%.2f MB", float64(size)/(1<<20))
-    default:
-        return fmt.Sprintf("%d KB", size/(1<<10))
-    }
-}
-
+// shortenPath truncates a path for display so it won't overflow the terminal line.
 func shortenPath(path string, maxLen int) string {
     if len(path) <= maxLen {
         return path
@@ -74,10 +68,13 @@ func shortenPath(path string, maxLen int) string {
     return path[:maxLen-3] + "..."
 }
 
-// isExcluded — пропустить ли системные "особые" каталоги (proc, sys, dev...).
+// isExcluded checks if we want to skip certain directories (e.g., /proc).
+// Because we want maximum portability, we skip only a small default set.
 func isExcluded(path string) bool {
+    // For universal usage, let's skip only well-known pseudo-dirs on Unix.
+    // If you're on a system where these don't exist, no harm done.
     base := filepath.Base(path)
-    switch base {
+    switch strings.ToLower(base) {
     case "proc", "sys", "dev", "run", "tmp", "var":
         return true
     default:
@@ -86,242 +83,30 @@ func isExcluded(path string) bool {
 }
 
 /*
-    DISK USAGE
+   BFS
+   We do a single-thread BFS so we don't overload IO. For each directory:
+   - Sum up the sizes of *files* in that directory. (No duplicates detection.)
+   - If scanning the directory takes too long (over slowThreshold), skip it entirely.
+   - Send progress to a channel so a separate goroutine can print it immediately.
 */
 
-func getDiskUsageInfo(path string) (total, free, used uint64, err error) {
-    var stat syscall.Statfs_t
-    if err := syscall.Statfs(path, &stat); err != nil {
-        return 0, 0, 0, err
-    }
-    total = stat.Blocks * uint64(stat.Bsize)
-    free = stat.Bfree * uint64(stat.Bsize)
-    used = total - free
-    return total, free, used, nil
-}
+// bfsScan walks the tree from root, returns slice of FolderSize sorted by descending size.
+func bfsScan(ctx context.Context, root string, slowThreshold time.Duration, progChan chan<- progressUpdate) []FolderSize {
+    results := make(map[string]*FolderSize)
 
-/*
-    NETWORK FS DETECTION
-*/
-
-func detectNetworkFileSystems(rootPath string) (map[string]string, []NetworkMount, error) {
-    if !isRootPath(rootPath) {
-        return nil, nil, nil
-    }
-    switch runtime.GOOS {
-    case "linux":
-        return detectNetworkFSLinux()
-    case "darwin":
-        return detectNetworkFSDarwin()
-    case "freebsd", "openbsd", "netbsd", "dragonfly":
-        return detectNetworkFSBSD()
-    case "windows":
-        return detectNetworkFSWindows()
-    default:
-        return nil, nil, nil
-    }
-}
-
-func isRootPath(path string) bool {
-    if runtime.GOOS == "windows" {
-        if len(path) == 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') {
-            return true
-        }
-        return false
-    }
-    return path == "/"
-}
-
-func detectNetworkFSLinux() (map[string]string, []NetworkMount, error) {
-    f, err := os.Open("/proc/mounts")
-    if err != nil {
-        return nil, nil, err
-    }
-    defer f.Close()
-    netMap := make(map[string]string)
-    var nets []NetworkMount
-    scanner := bufio.NewScanner(f)
-    for scanner.Scan() {
-        line := scanner.Text()
-        fields := strings.Fields(line)
-        if len(fields) < 3 {
-            continue
-        }
-        mountPoint := fields[1]
-        fsType := fields[2]
-        if isNetworkLike(fsType) {
-            netMap[mountPoint] = fsType
-            nets = append(nets, NetworkMount{
-                MountPoint:  mountPoint,
-                FsType:      fsType,
-                DisplayName: fmt.Sprintf("Network FS (%s)", fsType),
-            })
-        }
-    }
-    return netMap, nets, nil
-}
-
-func detectNetworkFSDarwin() (map[string]string, []NetworkMount, error) {
-    cmd := exec.Command("df", "-h")
-    out, err := cmd.Output()
-    if err != nil {
-        return nil, nil, err
-    }
-    netMap := make(map[string]string)
-    var nets []NetworkMount
-    lines := strings.Split(string(out), "\n")
-    for _, line := range lines {
-        fields := strings.Fields(line)
-        if len(fields) < 6 {
-            continue
-        }
-        mountPoint := fields[len(fields)-1]
-        fsSpec := fields[0]
-        if strings.Contains(fsSpec, ":/") || strings.HasPrefix(fsSpec, "//") {
-            netMap[mountPoint] = "network-like"
-            nets = append(nets, NetworkMount{
-                MountPoint:  mountPoint,
-                FsType:      "network-like",
-                DisplayName: fmt.Sprintf("Network FS (%s)", fsSpec),
-            })
-        }
-    }
-    return netMap, nets, nil
-}
-
-func detectNetworkFSBSD() (map[string]string, []NetworkMount, error) {
-    cmd := exec.Command("mount", "-l")
-    out, err := cmd.Output()
-    if err != nil {
-        return nil, nil, err
-    }
-    netMap := make(map[string]string)
-    var nets []NetworkMount
-    lines := strings.Split(string(out), "\n")
-    for _, line := range lines {
-        parts := strings.Split(line, " ")
-        if len(parts) < 4 {
-            continue
-        }
-        mountPoint := parts[2]
-        leftParen := strings.Index(line, "(")
-        rightParen := strings.Index(line, ")")
-        if leftParen >= 0 && rightParen > leftParen {
-            fsType := line[leftParen+1 : rightParen]
-            if isNetworkLike(fsType) {
-                netMap[mountPoint] = fsType
-                nets = append(nets, NetworkMount{
-                    MountPoint:  mountPoint,
-                    FsType:      fsType,
-                    DisplayName: fmt.Sprintf("Network FS (%s)", fsType),
-                })
-            }
-        }
-    }
-    return netMap, nets, nil
-}
-
-func detectNetworkFSWindows() (map[string]string, []NetworkMount, error) {
-    cmd := exec.Command("net", "use")
-    out, err := cmd.Output()
-    if err != nil {
-        return nil, nil, err
-    }
-    netMap := make(map[string]string)
-    var nets []NetworkMount
-    lines := strings.Split(string(out), "\n")
-    for _, line := range lines {
-        if strings.Contains(line, `\\`) {
-            fields := strings.Fields(line)
-            for _, f := range fields {
-                if strings.HasPrefix(f, `\\`) {
-                    netMap[f] = "windows-network"
-                    nets = append(nets, NetworkMount{
-                        MountPoint:  f,
-                        FsType:      "windows-network",
-                        DisplayName: fmt.Sprintf("Network FS (%s)", f),
-                    })
-                }
-            }
-        }
-    }
-    return netMap, nets, nil
-}
-
-func isNetworkLike(fsType string) bool {
-    fsType = strings.ToLower(fsType)
-    return strings.Contains(fsType, "nfs") ||
-        strings.Contains(fsType, "cifs") ||
-        strings.Contains(fsType, "smb") ||
-        strings.Contains(fsType, "sshfs") ||
-        strings.Contains(fsType, "ftp") ||
-        strings.Contains(fsType, "http") ||
-        strings.Contains(fsType, "dav")
-}
-
-/*
-    (DEV, INODE) TRACKING
-*/
-
-type devIno struct {
-    Dev uint64
-    Ino uint64
-}
-
-// getDevInode — для Unix возвращаем (dev, inode), для Windows в данном примере — false.
-func getDevInode(path string) (devIno, bool) {
-    if runtime.GOOS == "windows" {
-        return devIno{}, false
-    }
-    fi, err := os.Lstat(path)
-    if err != nil {
-        return devIno{}, false
-    }
-    statT, ok := fi.Sys().(*syscall.Stat_t)
-    if !ok {
-        return devIno{}, false
-    }
-    return devIno{Dev: uint64(statT.Dev), Ino: statT.Ino}, true
-}
-
-/*
-    BFS + CONTEXT
-    Мы добавляем проверку: select { case <-ctx.Done(): ... } в цикле.
-    Если контекст отменён (при получении сигнала), мы останавливаем сканирование
-    и возвращаем то, что успели посчитать.
-*/
-
-// scanProgress — структура для передачи инфы в горутину прогресса.
-type scanProgress struct {
-    CurrentDir   string
-    DirsCount    int64
-    BytesSoFar   int64
-    DuplicateHit bool
-}
-
-func bfsComputeSizes(
-    ctx context.Context,
-    root string,
-    netMap map[string]string,
-    slowThreshold time.Duration,
-    progressChan chan<- scanProgress,
-) []FolderSize {
-
-    resultsMap := make(map[string]*FolderSize)
+    // We'll track how many directories we've processed + total file bytes.
     var dirCount int64
     var totalBytes int64
-    visitedDevIno := make(map[devIno]bool)
 
     queue := list.New()
     queue.PushBack(root)
-    resultsMap[root] = &FolderSize{Path: root}
+    results[root] = &FolderSize{Path: root}
 
 BFSLOOP:
     for queue.Len() > 0 {
-        // Сначала проверяем, не отменён ли контекст
+        // Check if user canceled (interrupt)
         select {
         case <-ctx.Done():
-            // Контекст отменён: прерываем BFS
             break BFSLOOP
         default:
         }
@@ -330,78 +115,59 @@ BFSLOOP:
         queue.Remove(e)
         dirPath := e.Value.(string)
 
-        if _, ok := netMap[dirPath]; ok {
-            fsEntry := ensureFolderSize(resultsMap, dirPath)
-            fsEntry.Skipped = true
-            continue
-        }
+        // Possibly skip certain system directories
         if isExcluded(dirPath) {
-            fsEntry := ensureFolderSize(resultsMap, dirPath)
-            fsEntry.Skipped = true
+            res := ensureFolder(results, dirPath)
+            res.Skipped = true
             continue
         }
 
-        // Проверяем dev+inode
-        devInoVal, canCheck := getDevInode(dirPath)
-        if canCheck {
-            if visitedDevIno[devInoVal] {
-                // уже сканировали
-                fsEntry := ensureFolderSize(resultsMap, dirPath)
-                fsEntry.Duplicate = true
-                atomic.AddInt64(&dirCount, 1)
-                progressChan <- scanProgress{
-                    CurrentDir:   dirPath + " (duplicate)",
-                    DirsCount:    atomic.LoadInt64(&dirCount),
-                    BytesSoFar:   atomic.LoadInt64(&totalBytes),
-                    DuplicateHit: true,
-                }
-                continue
-            }
-            visitedDevIno[devInoVal] = true
-        }
-
-        startTime := time.Now()
+        start := time.Now()
         var localSize int64
-        skipDir := false
-        entries, err := ioutil.ReadDir(dirPath)
+        skipThis := false
+
+        // Read directory contents
+        files, err := ioutil.ReadDir(dirPath)
         if err != nil {
-            skipDir = true
+            skipThis = true
         } else {
-            for _, fi := range entries {
-                if time.Since(startTime) > slowThreshold {
-                    skipDir = true
+            for _, fi := range files {
+                if time.Since(start) > slowThreshold {
+                    skipThis = true
                     break
                 }
+                // Add file size
                 if !fi.IsDir() {
                     localSize += fi.Size()
                 }
             }
         }
 
-        fsEntry := ensureFolderSize(resultsMap, dirPath)
-        fsEntry.Size = localSize
-        fsEntry.Skipped = skipDir
+        // Update the results map
+        fEntry := ensureFolder(results, dirPath)
+        fEntry.Size = localSize
+        fEntry.Skipped = skipThis
 
         atomic.AddInt64(&dirCount, 1)
-        if !skipDir {
+        if !skipThis {
             atomic.AddInt64(&totalBytes, localSize)
         }
 
-        // Сообщаем о прогрессе
-        progressChan <- scanProgress{
-            CurrentDir:   dirPath,
-            DirsCount:    atomic.LoadInt64(&dirCount),
-            BytesSoFar:   atomic.LoadInt64(&totalBytes),
-            DuplicateHit: false,
+        // Send progress to progress goroutine
+        progChan <- progressUpdate{
+            CurrentDir: dirPath,
+            NumDirs:    atomic.LoadInt64(&dirCount),
+            BytesTotal: atomic.LoadInt64(&totalBytes),
         }
 
-        // Если директория не пропущена, добавляем сабдиры
-        if !skipDir && err == nil {
-            for _, fi := range entries {
+        // If not skipped, enqueue subdirectories
+        if !skipThis && err == nil {
+            for _, fi := range files {
                 if fi.IsDir() {
                     subPath := filepath.Join(dirPath, fi.Name())
-                    if _, ok := resultsMap[subPath]; !ok {
-                        resultsMap[subPath] = &FolderSize{Path: subPath}
+                    // Make sure we have an entry
+                    if _, ok := results[subPath]; !ok {
+                        results[subPath] = &FolderSize{Path: subPath}
                     }
                     queue.PushBack(subPath)
                 }
@@ -409,191 +175,154 @@ BFSLOOP:
         }
     }
 
-    // Превращаем в слайс, сортируем
-    resultSlice := make([]FolderSize, 0, len(resultsMap))
-    for _, fs := range resultsMap {
-        resultSlice = append(resultSlice, *fs)
+    // Convert map => slice
+    var out []FolderSize
+    for _, fs := range results {
+        out = append(out, *fs)
     }
-    sort.Slice(resultSlice, func(i, j int) bool {
-        return resultSlice[i].Size > resultSlice[j].Size
+    // Sort by descending size
+    sort.Slice(out, func(i, j int) bool {
+        return out[i].Size > out[j].Size
     })
-    return resultSlice
+    return out
 }
 
-func ensureFolderSize(m map[string]*FolderSize, path string) *FolderSize {
-    fsEntry, ok := m[path]
+// ensureFolder is a small helper to get or create a FolderSize entry.
+func ensureFolder(m map[string]*FolderSize, path string) *FolderSize {
+    fs, ok := m[path]
     if !ok {
-        fsEntry = &FolderSize{Path: path}
-        m[path] = fsEntry
+        fs = &FolderSize{Path: path}
+        m[path] = fs
     }
-    return fsEntry
+    return fs
 }
 
 /*
-    ПРОГРЕСС ГОРУТИНА
+   PROGRESS GOROUTINE
+   Prints an update every 250-300ms until the channel is closed or context canceled.
 */
 
-func progressReporter(
-    ctx context.Context,
-    progressChan <-chan scanProgress,
-    doneChan chan<- bool,
-    totalDiskBytes int64,
-) {
-    ticker := time.NewTicker(350 * time.Millisecond)
+func progressReporter(ctx context.Context, progChan <-chan progressUpdate, done chan<- bool) {
+    ticker := time.NewTicker(300 * time.Millisecond)
     defer ticker.Stop()
 
-    var lastMsg scanProgress
+    var last progressUpdate
 
     for {
         select {
         case <-ctx.Done():
-            // Если контекст отменён (сигнал), выходим
+            // user interrupted => finalize
             fmt.Printf("\r\033[K")
-            doneChan <- true
+            done <- true
             return
-
-        case msg, ok := <-progressChan:
+        case upd, ok := <-progChan:
             if !ok {
-                // Канал закрыт — сканирование окончено
+                // BFS ended => channel closed
                 fmt.Printf("\r\033[K")
-                doneChan <- true
+                done <- true
                 return
             }
-            lastMsg = msg
-
+            last = upd
         case <-ticker.C:
-            // Периодически перерисовываем строку
-            fmt.Printf("\r\033[K")
-            shortDir := shortenPath(lastMsg.CurrentDir, 50)
-            msgStr := fmt.Sprintf(
-                " Scanned dirs: %d | Accumulated size: %s",
-                lastMsg.DirsCount,
-                formatSize(lastMsg.BytesSoFar),
+            // Print the last update
+            fmt.Printf("\r\033[K") // clear line
+            shortDir := shortenPath(last.CurrentDir, 50)
+            fmt.Printf(" Scanned dirs: %d | Accumulated size: %s | scanning: %s",
+                last.NumDirs,
+                formatSize(last.BytesTotal),
+                shortDir,
             )
-            if totalDiskBytes > 0 {
-                pct := float64(lastMsg.BytesSoFar) / float64(totalDiskBytes) * 100
-                if pct > 100 {
-                    msgStr += fmt.Sprintf(" (%.2f%%; duplicates exist)", pct)
-                } else {
-                    msgStr += fmt.Sprintf(" (%.2f%% of disk)", pct)
-                }
-            }
-            fmt.Printf("%s | scanning: %s", msgStr, shortDir)
         }
     }
 }
 
 /*
-    MAIN
+   MAIN
+   - We parse flags
+   - Attempt to handle signals (if available)
+   - BFS in main goroutine
+   - Progress in separate goroutine
+   - Print partial results if interrupted
 */
 
 func main() {
-    // Разбираем флаги
     flag.Usage = func() {
         fmt.Println("Usage: find-large-dirs [directory] [--top <N>] [--slow-threshold <duration>]")
-        fmt.Println("[--help] [--version]")
-        fmt.Println("Single-pass BFS (one-thread I/O), skipping duplicates, shows immediate progress,")
-        fmt.Println("and prints partial results on interruption.")
+        fmt.Println(" [--help] [--version]")
+        fmt.Println("Simple BFS across all subdirectories in one thread, prints immediate progress,")
+        fmt.Println("and partial results if interrupted. No OS-specific calls. Compiles on *all* platforms.")
     }
     helpFlag := flag.Bool("help", false, "Show help")
-    topFlag := flag.Int("top", 30, "Number of top largest folders to display")
-    slowFlag := flag.Duration("slow-threshold", 2*time.Second, "Max time before skipping a directory")
-    versionFlag := flag.Bool("version", false, "Show version")
+    topFlag := flag.Int("top", 30, "How many top-largest directories to display")
+    slowFlag := flag.Duration("slow-threshold", 2*time.Second, "Max time to scan a directory before skipping it")
+    versFlag := flag.Bool("version", false, "Show version")
     flag.Parse()
 
     if *helpFlag {
         flag.Usage()
         return
     }
-    if *versionFlag {
+    if *versFlag {
         fmt.Printf("find-large-dirs version: %s\n", version)
         return
     }
 
-    rootPath := "/"
+    // Default root: "/" on Unix-likes, but some OS might not have a root path.
+    // We'll fallback to "." if "/" doesn't exist or if user didn't specify.
+    root := "/"
+    // On Windows, "/" is valid but is actually the root of current drive in many shells.
+    // We'll do a quick check to see if it exists. If not, fallback to "."
+    if _, err := os.Stat(root); err != nil && os.IsNotExist(err) {
+        root = "."
+    }
+    // If user gave an argument, override
     if flag.NArg() > 0 {
-        rootPath = flag.Arg(0)
+        root = flag.Arg(0)
     }
 
-    // Создаём контекст, который отменим при сигнале
+    // Set up cancellation via signals (in most OS).  
     ctx, cancel := context.WithCancel(context.Background())
 
-    // Ловим сигналы прерывания
+    // Some OS do not support signals well (js/wasm, etc.). If it fails, you can remove.
     sigChan := make(chan os.Signal, 1)
-    // Перехватываем Ctrl+C, SIGTERM и т.п.
-    signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-    // Горутину, которая ждёт сигнал
+    signal.Notify(sigChan, os.Interrupt) // SIGINT
+    // No reference to syscalls or platform-specific signals beyond this
     go func() {
         <-sigChan
-        fmt.Fprintf(os.Stderr, "\nReceived interruption signal, finalizing...\n")
-        // Отменяем контекст
+        fmt.Fprintf(os.Stderr, "\nInterrupted. Finalizing...\n")
         cancel()
     }()
 
-    // Детектируем сетевые ФС (только если корень)
-    netMap, netMounts, err := detectNetworkFileSystems(rootPath)
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "Warning: could not detect network FS: %v\n", err)
-    }
+    fmt.Printf("Scanning '%s'...\n\n", root)
 
-    // Если корень, считаем общий размер диска
-    var totalDiskBytes int64
-    if isRootPath(rootPath) {
-        total, _, _, err := getDiskUsageInfo(rootPath)
-        if err == nil {
-            totalDiskBytes = int64(total)
-        }
-    }
-
-    fmt.Printf("Scanning '%s'...\n\n", rootPath)
-
-    // Канал и горутина для прогресса
-    progressChan := make(chan scanProgress, 10)
+    // Start progress goroutine
+    progChan := make(chan progressUpdate, 10)
     doneChan := make(chan bool)
-    go progressReporter(ctx, progressChan, doneChan, totalDiskBytes)
+    go progressReporter(ctx, progChan, doneChan)
 
-    // Запускаем BFS в текущей горутине
-    resultFolders := bfsComputeSizes(ctx, rootPath, netMap, *slowFlag, progressChan)
+    // Run BFS in main goroutine
+    folders := bfsScan(ctx, root, *slowFlag, progChan)
 
-    // Закрываем канал, ждём завершения прогресс-горутины
-    close(progressChan)
+    // Close progress channel, wait for progress goroutine
+    close(progChan)
     <-doneChan
     fmt.Println()
 
-    // Выводим инфо о сетевых ФС
-    if len(netMounts) > 0 {
-        fmt.Println("Network filesystems detected (skipped entirely):")
-        for _, nm := range netMounts {
-            fmt.Printf("  %s => %s\n", nm.DisplayName, nm.MountPoint)
-        }
-        fmt.Println()
-    }
-
-    // Выводим топ N
-    fmt.Printf("Top %d largest directories in '%s':\n", *topFlag, rootPath)
-    w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+    // Print top N largest directories
+    fmt.Printf("Top %d largest directories in '%s':\n", *topFlag, root)
+    tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
     count := 0
-    for _, fs := range resultFolders {
+    for _, fs := range folders {
         if count >= *topFlag {
             break
         }
-        dp := fs.Path
         note := ""
         if fs.Skipped {
-            note = "(skipped)"
-        } else if fs.Duplicate {
-            note = "(duplicate)"
+            note = " (skipped)"
         }
-        if note != "" {
-            dp += " " + note
-        }
-        fmt.Fprintf(w, "%-10s\t%-60s\n", formatSize(fs.Size), dp)
+        fmt.Fprintf(tw, "%-10s\t%s%s\n", formatSize(fs.Size), fs.Path, note)
         count++
     }
-    w.Flush()
-
-    // Если программа прервана, пользователь всё равно увидит частичные результаты,
-    // так как BFS вышел по ctx.Done(), а мы всё распечатали.
+    tw.Flush()
 }
 
