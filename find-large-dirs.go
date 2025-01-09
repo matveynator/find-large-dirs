@@ -5,6 +5,9 @@
 // - Shows immediate progress, and partial results on interrupt (if signals are supported).
 // - Skips any duplication or network FS detection to stay universal.
 // - NEW: Calculates file-type proportions (e.g., 20% Images, 30% Video, etc.)
+// - ADDED: Цветная подсветка прогресса и процентных содержаний, жирное выделение путей.
+//
+// Сделано так, чтобы работать быстро и не нагружать систему.
 
 package main
 
@@ -22,6 +25,22 @@ import (
 	"sync/atomic"
 	"text/tabwriter"
 	"time"
+)
+
+/*
+   ------------------------------------------------------------------------------------
+   ГЛОБАЛЬНЫЕ КОНСТАНТЫ ДЛЯ ANSI-ПОДСВЕТКИ
+   ------------------------------------------------------------------------------------
+*/
+
+const (
+	ColorReset   = "\033[0m"
+	ColorBold    = "\033[1m"
+	ColorRed     = "\033[31m"
+	ColorGreen   = "\033[32m"
+	ColorYellow  = "\033[33m"
+	ColorBlue    = "\033[34m"
+	ColorMagenta = "\033[35m"
 )
 
 /*
@@ -118,7 +137,7 @@ func isExcluded(path string, userExcludes []string) bool {
 }
 
 // classifyExtension categorizes a file based on its extension.
-// We group popular extensions into categories like "Image", "Video", "Archive", etc.
+// We group popular extensions into categories like "Image", "Video", etc.
 // Anything not recognized falls under "Other".
 func classifyExtension(fileName string) string {
 	ext := strings.ToLower(filepath.Ext(fileName))
@@ -225,7 +244,12 @@ func formatFileTypeRatios(fileTypes map[string]int64, totalSize int64) string {
 	var parts []string
 	for _, p := range pairs {
 		percent := float64(p.Size) / float64(totalSize) * 100
-		parts = append(parts, fmt.Sprintf("%.2f%% %s", percent, p.Cat))
+		// Подсветим проценты в магентовом цвете, а название категории — в зелёном:
+		parts = append(parts, fmt.Sprintf(
+			"%s%.2f%%%s %s%s%s",
+			ColorMagenta, percent, ColorReset,
+			ColorGreen, p.Cat, ColorReset,
+		))
 	}
 
 	return strings.Join(parts, ", ")
@@ -235,13 +259,12 @@ func formatFileTypeRatios(fileTypes map[string]int64, totalSize int64) string {
    ------------------------------------------------------------------------------------
    BFS SCANNING
    ------------------------------------------------------------------------------------
-   We perform a single-threaded BFS to avoid overwhelming I/O. For each directory:
-     - We sum up sizes of the *files* within that directory only.
-     - We also categorize each file by type (Image, Video, etc.) for that directory.
-     - If scanning takes longer than 'slowThreshold', we mark that directory as Skipped.
-     - We send progress updates to a separate goroutine through progChan so it can
-       display progress in near real-time.
-     - We do NOT detect duplicates or handle network FS specifics (to remain universal).
+   Мы выполняем одно-поточную BFS, чтобы не перегружать ввод-вывод. Для каждой директории:
+     - Суммируем размер *только* файлов внутри этой директории.
+     - Категоризируем каждый файл по типам (Image, Video и т.д.).
+     - Если чтение директории занимает больше 'slowThreshold', помечаем как Skipped.
+     - Через progChan шлём прогресс, чтобы можно было в реальном времени выводить сканируемый путь.
+     - Не детектируем дубликаты и не учитываем особенности сетевых ФС (для универсальности).
 */
 
 // bfsScan performs a Breadth-First Search starting from 'root', excluding directories
@@ -301,7 +324,6 @@ BFSLOOP:
 		// Attempt to read the contents of the directory.
 		files, err := ioutil.ReadDir(dirPath)
 		if err != nil {
-			// If there's any error (e.g., permission denied), mark this directory as skipped.
 			skipThis = true
 		} else {
 			// We iterate over each item in the directory.
@@ -311,11 +333,10 @@ BFSLOOP:
 					skipThis = true
 					break
 				}
-				// For each *file*, add its size to the localSize and update the file-type map.
+				// Для каждого *файла* добавляем размер к localSize и обновляем карту типов.
 				if !fi.IsDir() {
 					fileSize := fi.Size()
 					localSize += fileSize
-					// Classify the file extension.
 					fileCat := classifyExtension(fi.Name())
 					fEntry := ensureFolder(results, dirPath)
 					fEntry.FileTypes[fileCat] += fileSize
@@ -347,9 +368,7 @@ BFSLOOP:
 			for _, fi := range files {
 				if fi.IsDir() {
 					subPath := filepath.Join(dirPath, fi.Name())
-					// Ensure the sub-directory entry is in the results map.
 					_ = ensureFolder(results, subPath)
-					// Add the sub-directory to the BFS queue.
 					queue.PushBack(subPath)
 				}
 			}
@@ -387,9 +406,9 @@ func ensureFolder(m map[string]*FolderSize, path string) *FolderSize {
    ------------------------------------------------------------------------------------
    PROGRESS REPORTER GOROUTINE
    ------------------------------------------------------------------------------------
-   The progressReporter function runs in its own goroutine, reading progressUpdate
-   items from a channel. It prints a status update every ~300ms, until the channel
-   is closed or the context is canceled.
+   Функция progressReporter работает в отдельной горутине, читает сообщения о прогрессе
+   из канала progChan и выводит их каждые ~300 мс, пока не завершится BFS или пока
+   пользователь не прервёт процесс.
 */
 
 // progressReporter reads progress updates from progChan and prints them
@@ -416,16 +435,21 @@ func progressReporter(ctx context.Context, progChan <-chan progressUpdate, done 
 				done <- true
 				return
 			}
-			// Store the most recent update so we can print it on the next tick.
 			last = upd
 
 		case <-ticker.C:
-			// Every ~300ms, we print the last known update (if any).
+			// Каждые ~300мс выводим обновление статуса с цветами.
 			fmt.Printf("\r\033[K") // Clear the current terminal line.
+
 			shortDir := shortenPath(last.CurrentDir, 50)
-			fmt.Printf(" Scanned dirs: %d | Accumulated size: %s | scanning: %s",
+
+			// Красим часть «Scanned dirs» в жёлтый, «Accumulated size» в зелёный, текущую папку — в синий.
+			fmt.Printf("%sScanned dirs%s: %d | %sAccumulated size%s: %s | %sscanning%s: %s",
+				ColorYellow, ColorReset,
 				last.NumDirs,
+				ColorGreen, ColorReset,
 				formatSize(last.BytesTotal),
+				ColorBlue, ColorReset,
 				shortDir,
 			)
 		}
@@ -436,15 +460,14 @@ func progressReporter(ctx context.Context, progChan <-chan progressUpdate, done 
    ------------------------------------------------------------------------------------
    MAIN FUNCTION
    ------------------------------------------------------------------------------------
-   1) Parse command-line flags (help, version, top, slow-threshold, exclude).
-   2) Determine root directory to scan (default "/" or "." if "/" doesn't exist).
-   3) Set up context cancellation on interrupt (SIGINT).
-   4) Start the progressReporter goroutine.
-   5) Perform BFS scan in the main goroutine.
-   6) On completion, print the top N largest directories, including file-type proportions.
+   1) Парсит флаги (help, version, top, slow-threshold, exclude).
+   2) Определяет корневую директорию (по умолчанию "/" или ".", если "/" нет).
+   3) Настраивает контекст с отменой по сигналу прерывания (SIGINT).
+   4) Запускает горутину progressReporter.
+   5) Выполняет BFS в главной горутине.
+   6) Выводит N самых больших директорий и процентное содержание типов файлов.
 */
 
-// main is the entry point of our program.
 func main() {
 	// Define custom usage instructions.
 	flag.Usage = func() {
@@ -455,15 +478,14 @@ func main() {
 		fmt.Println("Simple BFS across all subdirectories in one thread, prints immediate progress,")
 		fmt.Println("and partial results if interrupted. No OS-specific calls. Compiles on all platforms.")
 		fmt.Println("Now also shows file-type proportions in each directory.")
+		fmt.Println("Added: Цветная подсветка прогресса и процентных содержаний, жирное выделение директорий.")
 	}
 
-	// Define command-line flags.
 	helpFlag := flag.Bool("help", false, "Show help")
 	topFlag := flag.Int("top", 30, "How many top-largest directories to display")
 	slowFlag := flag.Duration("slow-threshold", 2*time.Second, "Max time to scan a directory before skipping it")
 	versFlag := flag.Bool("version", false, "Show version")
 
-	// multiFlag for handling multiple --exclude flags.
 	var excludeFlag multiFlag
 	flag.Var(&excludeFlag, "exclude", "Specify paths to ignore (repeatable)")
 
@@ -483,12 +505,10 @@ func main() {
 	}
 
 	// Determine the root directory to start scanning.
-	// By default, we use "/", but if "/" doesn't exist, we use ".".
 	root := "/"
 	if _, err := os.Stat(root); err != nil && os.IsNotExist(err) {
 		root = "."
 	}
-	// If the user provided a directory argument, use that instead.
 	if flag.NArg() > 0 {
 		root = flag.Arg(0)
 	}
@@ -528,14 +548,20 @@ func main() {
 		if count >= *topFlag {
 			break
 		}
-		note := ""
+
+		// Если директория была пропущена, выделим это красным.
+		var note string
 		if fs.Skipped {
-			note = " (skipped)"
+			note = fmt.Sprintf(" %s(skipped)%s", ColorRed, ColorReset)
 		}
 
-		// Print each directory's size, path, note, and then the file-type proportions.
-		// We indent the proportions line for clarity.
-		fmt.Fprintf(tw, "%-10s\t%s%s\n", formatSize(fs.Size), fs.Path, note)
+		// Путь директории сделаем жирным:
+		dirPathBold := fmt.Sprintf("%s%s%s", ColorBold, fs.Path, ColorReset)
+
+		// Выводим строку: размер, путь, пометка "skipped"
+		fmt.Fprintf(tw, "%-10s\t%s%s\n", formatSize(fs.Size), dirPathBold, note)
+
+		// На следующей строке с отступом – проценты по типам:
 		ratioStr := formatFileTypeRatios(fs.FileTypes, fs.Size)
 		fmt.Fprintf(tw, "          \t -> File types: %s\n", ratioStr)
 
