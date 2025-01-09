@@ -44,6 +44,18 @@ type progressUpdate struct {
     BytesTotal int64
 }
 
+// multiFlag — специальный тип для считывания нескольких --exclude флагов.
+type multiFlag []string
+
+func (m *multiFlag) String() string {
+    return strings.Join(*m, ", ")
+}
+
+func (m *multiFlag) Set(value string) error {
+    *m = append(*m, value)
+    return nil
+}
+
 /*
    UTILITIES
 */
@@ -68,11 +80,20 @@ func shortenPath(path string, maxLen int) string {
     return path[:maxLen-3] + "..."
 }
 
-// isExcluded checks if we want to skip certain directories (e.g., /proc).
-// Because we want maximum portability, we skip only a small default set.
-func isExcluded(path string) bool {
-    // For universal usage, let's skip only well-known pseudo-dirs on Unix.
-    // If you're on a system where these don't exist, no harm done.
+// isExcluded checks if we want to skip certain directories (e.g., /proc) or пользовательские исключения.
+func isExcluded(path string, userExcludes []string) bool {
+    // Сначала проверим пользовательские исключения.
+    // Если путь начинается с одного из exclude-путей — пропускаем.
+    for _, ex := range userExcludes {
+        // Можно сделать и точное сравнение, если нужно:
+        // if path == ex { return true }
+        // Ниже — проверка по префиксу:
+        if strings.HasPrefix(path, ex) {
+            return true
+        }
+    }
+
+    // Далее — стандартные исключения для универсальности (пропуск системных псевдо-директорий и т.п.).
     base := filepath.Base(path)
     switch strings.ToLower(base) {
     case "proc", "sys", "dev", "run", "tmp", "var":
@@ -91,7 +112,7 @@ func isExcluded(path string) bool {
 */
 
 // bfsScan walks the tree from root, returns slice of FolderSize sorted by descending size.
-func bfsScan(ctx context.Context, root string, slowThreshold time.Duration, progChan chan<- progressUpdate) []FolderSize {
+func bfsScan(ctx context.Context, root string, excludes []string, slowThreshold time.Duration, progChan chan<- progressUpdate) []FolderSize {
     results := make(map[string]*FolderSize)
 
     // We'll track how many directories we've processed + total file bytes.
@@ -115,8 +136,8 @@ BFSLOOP:
         queue.Remove(e)
         dirPath := e.Value.(string)
 
-        // Possibly skip certain system directories
-        if isExcluded(dirPath) {
+        // Если путь в исключениях — пропускаем
+        if isExcluded(dirPath, excludes) {
             res := ensureFolder(results, dirPath)
             res.Skipped = true
             continue
@@ -248,6 +269,7 @@ func progressReporter(ctx context.Context, progChan <-chan progressUpdate, done 
 func main() {
     flag.Usage = func() {
         fmt.Println("Usage: find-large-dirs [directory] [--top <N>] [--slow-threshold <duration>]")
+        fmt.Println(" [--exclude <path>] (repeatable)")
         fmt.Println(" [--help] [--version]")
         fmt.Println("Simple BFS across all subdirectories in one thread, prints immediate progress,")
         fmt.Println("and partial results if interrupted. No OS-specific calls. Compiles on *all* platforms.")
@@ -256,6 +278,11 @@ func main() {
     topFlag := flag.Int("top", 30, "How many top-largest directories to display")
     slowFlag := flag.Duration("slow-threshold", 2*time.Second, "Max time to scan a directory before skipping it")
     versFlag := flag.Bool("version", false, "Show version")
+
+    // Наш кастомный slice для нескольких --exclude
+    var excludeFlag multiFlag
+    flag.Var(&excludeFlag, "exclude", "Specify paths to ignore (repeatable)")
+
     flag.Parse()
 
     if *helpFlag {
@@ -270,8 +297,6 @@ func main() {
     // Default root: "/" on Unix-likes, but some OS might not have a root path.
     // We'll fallback to "." if "/" doesn't exist or if user didn't specify.
     root := "/"
-    // On Windows, "/" is valid but is actually the root of current drive in many shells.
-    // We'll do a quick check to see if it exists. If not, fallback to "."
     if _, err := os.Stat(root); err != nil && os.IsNotExist(err) {
         root = "."
     }
@@ -280,13 +305,10 @@ func main() {
         root = flag.Arg(0)
     }
 
-    // Set up cancellation via signals (in most OS).  
+    // Set up cancellation via signals (in most OS).
     ctx, cancel := context.WithCancel(context.Background())
-
-    // Some OS do not support signals well (js/wasm, etc.). If it fails, you can remove.
     sigChan := make(chan os.Signal, 1)
     signal.Notify(sigChan, os.Interrupt) // SIGINT
-    // No reference to syscalls or platform-specific signals beyond this
     go func() {
         <-sigChan
         fmt.Fprintf(os.Stderr, "\nInterrupted. Finalizing...\n")
@@ -301,7 +323,7 @@ func main() {
     go progressReporter(ctx, progChan, doneChan)
 
     // Run BFS in main goroutine
-    folders := bfsScan(ctx, root, *slowFlag, progChan)
+    folders := bfsScan(ctx, root, excludeFlag, *slowFlag, progChan)
 
     // Close progress channel, wait for progress goroutine
     close(progChan)
