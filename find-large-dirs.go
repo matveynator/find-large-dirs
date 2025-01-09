@@ -109,6 +109,8 @@ func getColorForCategory(cat string) string {
 		return ColorRed
 	case "Database":
 		return ColorMagenta
+	case "DB-Backup":
+	  return ColorGreen
 	case "Backup":
 		return ColorRed
 	case "Disk Image":
@@ -194,11 +196,13 @@ func classifyExtension(fileName string) string {
 		return "Code"
 	case ".log", ".trace", ".log.gz", ".log.bz2":
 		return "Log"
-	case ".sql", ".db", ".sqlite", ".sqlite3", ".mdb", ".accdb", ".ndb", ".frm", ".ibd", ".myd", ".myi", ".rdb", ".aof", ".wal", ".shm", ".journal":
+	case ".db", ".sqlite", ".sqlite3", ".mdb", ".accdb", ".ndb", ".frm", ".ibd", ".myd", ".myi", ".rdb", ".aof", ".wal", ".shm", ".journal":
 		return "Database"
-	case ".bak", ".backup", ".bkp", ".ab", ".dump":
+	case ".bak", ".backup", ".bkp", ".ab":
 		return "Backup"
-	case ".iso", ".img", ".vhd", ".vhdx", ".vmdk", ".dsk":
+  case ".sql", ".sql.gz", ".dump.gz", ".dump", ".cma":
+	    return "DB-Backup"
+	case ".iso", ".img", ".vhd", ".vhdx", ".vmdk", ".qcow2", ".qcow", ".dd", ".dsk":
 		return "Disk Image"
 	case ".conf", ".cfg", ".ini", ".yaml", ".yml", ".json", ".xml", ".toml":
 		return "Configuration"
