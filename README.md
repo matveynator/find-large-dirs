@@ -82,24 +82,44 @@ Here is the table with **direct download links** for all available platforms and
 
 ## **How to Use**
 
-### **Basic Command**
-
-```bash
-find-large-dirs /
-```
-
-### **Example Output**
+### **Basic Example**
 
 ```plaintext
-Scanning directory: /tmp/
-Progress: 100.00%
+find-large-dirs /System/Applications/
+Scanning '/System/Applications/'...
 
-Top 20 Directories by Size:
-727.48 GB    /home
-105.87 GB    /backup
-91.97 GB     /root
-68.68 GB     /var
-1.20 GB      /usr
+
+Top 30 largest directories in '/System/Applications/':
+59.82 MB    /System/Applications/Music.app/Contents/MacOS
+43.32 MB    /System/Applications/Books.app/Contents/MacOS
+39.75 MB    /System/Applications/TV.app/Contents/MacOS
+34.09 MB    /System/Applications/Freeform.app/Contents/MacOS
+32.08 MB    /System/Applications/Maps.app/Contents/MacOS
+21.55 MB    /System/Applications/Weather.app/Contents/MacOS
+19.44 MB    /System/Applications/Maps.app/Contents/Resources
+18.18 MB    /System/Applications/Photos.app/Contents/MacOS
+16.64 MB    /System/Applications/Music.app/Contents/Resources
+16.41 MB    /System/Applications/TV.app/Contents/Resources
+14.84 MB    /System/Applications/FindMy.app/Contents/Resources
+14.83 MB    /System/Applications/Photos.app/Contents/Resources
+14.24 MB    /System/Applications/Notes.app/Contents/MacOS
+13.78 MB    /System/Applications/Freeform.app/Contents/Resources
+13.09 MB    /System/Applications/Dictionary.app/Contents/Resources
+11.91 MB    /System/Applications/FindMy.app/Contents/MacOS
+11.43 MB    /System/Applications/App Store.app/Contents/MacOS
+11.22 MB    /System/Applications/Reminders.app/Contents/MacOS
+11.07 MB    /System/Applications/Podcasts.app/Contents/MacOS
+10.36 MB    /System/Applications/Mail.app/Contents/MacOS
+10.10 MB    /System/Applications/Utilities/AirPort Utility.app/Contents/Resources
+9.76 MB     /System/Applications/Books.app/Contents/Resources
+9.48 MB     /System/Applications/Maps.app/Contents/PlugIns/MapsAppKitBundle.bundle/Contents/Resources
+9.16 MB     /System/Applications/Podcasts.app/Contents/Frameworks/PodcastsStoreUI.framework/Versions/A
+8.65 MB     /System/Applications/Books.app/Contents/Frameworks/BookCore.framework/Versions/A
+7.65 MB     /System/Applications/Font Book.app/Contents/MacOS
+7.52 MB     /System/Applications/Mail.app/Contents/Resources
+6.81 MB     /System/Applications/Podcasts.app/Contents/Frameworks/AppStoreKit.framework/Versions/A
+6.62 MB     /System/Applications/Notes.app/Contents/Resources
+6.53 MB     /System/Applications/Books.app/Contents/Frameworks/TemplateUI.framework/Versions/A
 ```
 
 **Options:**
