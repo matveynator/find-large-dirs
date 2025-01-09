@@ -601,7 +601,7 @@ func main() {
 			}
 			sign := "+"
 			if diffMB < 0 {
-				sign = "-"
+				sign = ""
 			}
 			if (diffMB != 0) || (percent != 0.0){
 				// Build a string like: (+12.34 MB, +5.67%)
