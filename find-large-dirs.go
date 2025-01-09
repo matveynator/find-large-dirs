@@ -2,14 +2,16 @@
 //
 // A single-file BFS directory scanner that compiles on all Go platforms:
 //  - No "syscall" references, no OS-specific calls.
-//  - Shows immediate progress with ANSI color highlights, and partial results on interrupt.
+//  - Shows immediate, colored progress and partial results on interrupt.
 //  - Skips any duplication or network FS detection to remain universal.
-//  - NEW: Calculates file-type proportions (e.g., 20% Images, 30% Video, etc.)
-//  - Default: shows top 15 largest directories.
+//  - NEW: Calculates file-type proportions (e.g., 20% Images, 30% Video, etc.),
+//         now color-coded by category.
 //
 // Usage: find-large-dirs [directory] [--top <N>] [--slow-threshold <duration>]
 //                        [--exclude <path>] (repeatable)
 //                        [--help] [--version]
+//
+// Default: shows top 15 largest directories.
 //
 // Example: find-large-dirs /home --top 20 --exclude /home/user/cache --slow-threshold 3s
 //
@@ -39,12 +41,9 @@ import (
    ------------------------------------------------------------------------------------
 */
 
-// version holds the program version, can be set at build time (default is "dev").
-var version = "dev"
+var version = "dev" // Can be set at build time.
 
-// FolderSize represents each folder found, including its path, the accumulated
-// size of files *within that directory*, a Skipped flag if not fully scanned,
-// and a map of file types to their total size (e.g. "Image" -> 12345 bytes).
+// FolderSize holds info about each directory: path, size, skip-flag, file-type size map.
 type FolderSize struct {
 	Path      string
 	Size      int64
@@ -52,25 +51,19 @@ type FolderSize struct {
 	FileTypes map[string]int64
 }
 
-// progressUpdate is the structure sent through a channel to our progressReporter goroutine.
-// This allows us to display the current directory being scanned, how many directories
-// have been scanned, and the total accumulated bytes (only from non-skipped directories).
+// progressUpdate is sent to the progressReporter goroutine to display scanning progress.
 type progressUpdate struct {
 	CurrentDir string
 	NumDirs    int64
 	BytesTotal int64
 }
 
-// multiFlag is a custom type that allows reading multiple --exclude flags.
-// Each occurrence of --exclude <path> appends a path to this slice.
+// multiFlag is used to support multiple --exclude flags.
 type multiFlag []string
 
-// String returns the string representation of our multiFlag, joined by commas.
 func (m *multiFlag) String() string {
 	return strings.Join(*m, ", ")
 }
-
-// Set is called by the flag package when the --exclude flag is encountered.
 func (m *multiFlag) Set(value string) error {
 	*m = append(*m, value)
 	return nil
@@ -78,7 +71,7 @@ func (m *multiFlag) Set(value string) error {
 
 /*
    ------------------------------------------------------------------------------------
-   ANSI COLOR CODES (for optional highlighting)
+   ANSI COLOR CODES (including a new function for category-based colors)
    ------------------------------------------------------------------------------------
 */
 
@@ -91,8 +84,48 @@ const (
 	ColorMagenta = "\033[35m"
 	ColorCyan    = "\033[36m"
 	Bold         = "\033[1m"
-	// You can add more colors or styles if desired
 )
+
+// getColorForCategory returns an ANSI color code based on the file category name.
+// You can customize this mapping as you wish.
+func getColorForCategory(cat string) string {
+	switch cat {
+	case "Image":
+		return ColorGreen
+	case "Video":
+		return ColorMagenta
+	case "Audio":
+		return ColorCyan
+	case "Archive":
+		return ColorRed
+	case "Document":
+		return ColorYellow
+	case "Application":
+		return ColorBlue
+	case "Code":
+		return ColorBlue
+	case "Log":
+		return ColorYellow
+	case "Database":
+		return ColorMagenta
+	case "Backup":
+		return ColorRed
+	case "Disk Image":
+		return ColorCyan
+	case "Configuration":
+		return ColorYellow
+	case "Font":
+		return ColorCyan
+	case "Web":
+		return ColorGreen
+	case "Spreadsheet":
+		return ColorMagenta
+	case "Presentation":
+		return ColorBlue
+	default:
+		return ColorReset
+	}
+}
 
 /*
    ------------------------------------------------------------------------------------
@@ -113,8 +146,7 @@ func formatSize(sz int64) string {
 	}
 }
 
-// shortenPath truncates a path for display if it exceeds a specified maxLen,
-// appending "..." at the end.
+// shortenPath truncates a path for display if it exceeds maxLen, appending "..." at the end.
 func shortenPath(path string, maxLen int) string {
 	if len(path) <= maxLen {
 		return path
@@ -122,18 +154,15 @@ func shortenPath(path string, maxLen int) string {
 	return path[:maxLen-3] + "..."
 }
 
-// isExcluded checks whether a given path should be skipped, either because
-// it matches a user-provided exclude prefix, or because it is one of the
-// built-in system directories we choose to skip for universality.
+// isExcluded checks whether a given path should be skipped by userExcludes or system directories.
 func isExcluded(path string, userExcludes []string) bool {
-	// First, check if the path matches one of the user excludes by prefix.
+	// Check user-provided excludes.
 	for _, ex := range userExcludes {
 		if strings.HasPrefix(path, ex) {
 			return true
 		}
 	}
-
-	// Then, skip certain standard system/pseudo directories for cross-platform safety.
+	// Check standard system/pseudo directories.
 	base := filepath.Base(path)
 	switch strings.ToLower(base) {
 	case "proc", "sys", "dev", "run", "tmp", "var":
@@ -143,86 +172,50 @@ func isExcluded(path string, userExcludes []string) bool {
 	}
 }
 
-// classifyExtension categorizes a file based on its extension.
-// We group popular extensions into categories like "Image", "Video", "Archive", etc.
-// Anything not recognized falls under "Other".
+// classifyExtension groups files by common extensions: Image, Video, Audio, Archive, etc.
 func classifyExtension(fileName string) string {
 	ext := strings.ToLower(filepath.Ext(fileName))
 
 	switch ext {
-	// Common image formats
 	case ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".raw", ".webp", ".heic", ".heif":
 		return "Image"
-
-	// Common video formats
 	case ".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".webm", ".m4v":
 		return "Video"
-
-	// Common audio formats
 	case ".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".wma":
 		return "Audio"
-
-	// Common archive/compressed formats
 	case ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz":
 		return "Archive"
-
-	// Common documents
 	case ".pdf", ".doc", ".docx", ".txt", ".rtf":
 		return "Document"
-
-	// Common executables/binaries (applications)
 	case ".exe", ".dll", ".so", ".bin", ".dmg", ".pkg", ".apk":
 		return "Application"
-
-	// Common code/extensions
 	case ".go", ".c", ".cpp", ".h", ".hpp", ".js", ".ts", ".py", ".java", ".sh", ".rb", ".php":
 		return "Code"
-
-	// Common log files (including rotated logs)
 	case ".log", ".trace", ".dump", ".log.gz", ".log.bz2":
 		return "Log"
-
-	// Common database files
 	case ".sql", ".db", ".sqlite", ".sqlite3", ".mdb", ".accdb", ".ndb", ".frm", ".ibd":
 		return "Database"
-
-	// Common backup files
 	case ".bak", ".backup", ".bkp", ".ab":
 		return "Backup"
-
-	// Common disk image files
 	case ".iso", ".img", ".vhd", ".vhdx", ".vmdk", ".dsk":
 		return "Disk Image"
-
-	// Common configuration files
 	case ".conf", ".cfg", ".ini", ".yaml", ".yml", ".json", ".xml", ".toml":
 		return "Configuration"
-
-	// Common font files
 	case ".ttf", ".otf", ".woff", ".woff2", ".eot":
 		return "Font"
-
-	// Common web files
 	case ".html", ".htm", ".css", ".scss", ".less":
 		return "Web"
-
-	// Common spreadsheet formats
 	case ".ods", ".xls", ".xlsx", ".csv":
 		return "Spreadsheet"
-
-	// Common presentation formats
 	case ".odp", ".ppt", ".pptx":
 		return "Presentation"
-
-	// If not recognized, categorize as "Other"
 	default:
 		return "Other"
 	}
 }
 
-// formatFileTypeRatios produces a summary string like "20.00% Image, 30.00% Video, 50.00% Other"
-// given the map of file type sizes and the total directory size.
-// We list categories in descending order of size contribution, with color highlighting.
+// formatFileTypeRatios builds a string like "20.00% Image, 30.00% Video, 50.00% Other"
+// with categories in descending order of size, each category in its own color.
 func formatFileTypeRatios(fileTypes map[string]int64, totalSize int64) string {
 	if totalSize == 0 {
 		return "No files"
@@ -241,18 +234,26 @@ func formatFileTypeRatios(fileTypes map[string]int64, totalSize int64) string {
 		}
 	}
 
-	// Sort the pairs by descending size.
+	// Sort by descending size.
 	sort.Slice(pairs, func(i, j int) bool {
 		return pairs[i].Size > pairs[j].Size
 	})
 
-	// Build a comma-separated string of "percent% Category" with some color.
 	var parts []string
 	for _, p := range pairs {
 		percent := float64(p.Size) / float64(totalSize) * 100
-		// We'll color the percentages in green for visual clarity.
-		parts = append(parts, fmt.Sprintf("%s%.2f%%%s %s", 
-			ColorGreen, percent, ColorReset, p.Cat))
+		catColor := getColorForCategory(p.Cat)
+
+		parts = append(parts,
+			fmt.Sprintf("%s%.2f%%%s %s%s%s",
+				ColorGreen,         // color for the percentage value
+				percent,
+				ColorReset,
+				catColor,           // color for the category text
+				p.Cat,
+				ColorReset,
+			),
+		)
 	}
 
 	return strings.Join(parts, ", ")
@@ -263,17 +264,13 @@ func formatFileTypeRatios(fileTypes map[string]int64, totalSize int64) string {
    BFS SCANNING
    ------------------------------------------------------------------------------------
    We perform a single-threaded BFS to avoid overwhelming I/O. For each directory:
-     - We sum up sizes of the *files* within that directory only.
-     - We also categorize each file by type (Image, Video, etc.).
-     - If scanning takes longer than 'slowThreshold', we mark that directory as Skipped.
-     - We send progress updates to a separate goroutine (progChan) for near real-time UI.
-     - We do NOT detect duplicates or handle network FS specifics (to remain universal).
+     - Sum up the sizes of the *files* (not subdirectories).
+     - Categorize each file by type (Image, Video, etc.).
+     - If scanning a directory exceeds 'slowThreshold', we mark that directory as Skipped.
+     - We send progress updates to a separate goroutine via progChan for near real-time UI.
+     - We do NOT detect duplicates or handle network FS specifics to remain universal.
 */
 
-// bfsScan performs a Breadth-First Search starting from 'root', excluding directories
-// that match 'excludes'. If reading a directory takes longer than 'slowThreshold',
-// that directory is marked as Skipped and its subdirectories are not scanned.
-// Returns a slice of FolderSize sorted by descending folder size.
 func bfsScan(
 	ctx context.Context,
 	root string,
@@ -282,66 +279,51 @@ func bfsScan(
 	progChan chan<- progressUpdate,
 ) []FolderSize {
 
-	// Map to store folder info by path. The key is the directory path, the value is FolderSize.
 	results := make(map[string]*FolderSize)
-
-	// We track how many directories we've processed and the total file bytes (for progress).
 	var dirCount int64
 	var totalBytes int64
 
-	// The BFS queue holds directories to process.
 	queue := list.New()
 	queue.PushBack(root)
-	// Ensure the root entry exists in results.
 	results[root] = &FolderSize{Path: root, FileTypes: make(map[string]int64)}
 
 BFSLOOP:
 	for queue.Len() > 0 {
-		// Check if the user canceled (e.g., via interrupt signal).
 		select {
 		case <-ctx.Done():
-			// If context is canceled, break out of the BFS loop immediately.
 			break BFSLOOP
 		default:
 		}
 
-		// Pop the front of the queue (the next directory to scan).
 		e := queue.Front()
 		queue.Remove(e)
 		dirPath := e.Value.(string)
 
-		// If this directory is excluded, mark it as Skipped and do not scan further.
 		if isExcluded(dirPath, excludes) {
 			res := ensureFolder(results, dirPath)
 			res.Skipped = true
 			continue
 		}
 
-		// Start timing how long it takes to read the directory.
 		start := time.Now()
 		var localSize int64
 		skipThis := false
 
-		// Attempt to read the contents of the directory.
 		files, err := ioutil.ReadDir(dirPath)
 		if err != nil {
-			// If there's any error (e.g., permission denied), mark as skipped.
 			skipThis = true
 		} else {
-			// Iterate over each item in the directory.
 			for _, fi := range files {
-				// If it takes too long, skip the entire directory.
 				if time.Since(start) > slowThreshold {
 					skipThis = true
 					break
 				}
-				// For each file, add its size to localSize and categorize it.
 				if !fi.IsDir() {
-					fileSize := fi.Size()
-					localSize += fileSize
-					fileCat := classifyExtension(fi.Name())
+					size := fi.Size()
+					localSize += size
+					cat := classifyExtension(fi.Name())
 					fEntry := ensureFolder(results, dirPath)
-					fEntry.FileTypes[fileCat] += fileSize
+					fEntry.FileTypes[cat] += size
 				}
 			}
 		}
@@ -355,14 +337,12 @@ BFSLOOP:
 			atomic.AddInt64(&totalBytes, localSize)
 		}
 
-		// Send a progress update to the progressReporter goroutine.
 		progChan <- progressUpdate{
 			CurrentDir: dirPath,
 			NumDirs:    atomic.LoadInt64(&dirCount),
 			BytesTotal: atomic.LoadInt64(&totalBytes),
 		}
 
-		// If not skipped and no error, enqueue subdirectories.
 		if !skipThis && err == nil {
 			for _, fi := range files {
 				if fi.IsDir() {
@@ -374,7 +354,6 @@ BFSLOOP:
 		}
 	}
 
-	// Convert map results to a slice, then sort it by descending size.
 	var out []FolderSize
 	for _, fs := range results {
 		out = append(out, *fs)
@@ -402,12 +381,10 @@ func ensureFolder(m map[string]*FolderSize, path string) *FolderSize {
    ------------------------------------------------------------------------------------
    PROGRESS REPORTER GOROUTINE
    ------------------------------------------------------------------------------------
-   This function runs in its own goroutine, reading progressUpdate items from progChan.
-   It prints a status update every ~300ms, until the channel is closed or context canceled.
+   Reads progress updates from progChan and prints them every 300ms, until the channel
+   is closed or the context is canceled (e.g. user interrupt).
 */
 
-// progressReporter reads progress updates from progChan and prints them
-// every 300ms. It exits when the BFS is done (channel closes) or user interrupts.
 func progressReporter(ctx context.Context, progChan <-chan progressUpdate, done chan<- bool) {
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
@@ -417,24 +394,20 @@ func progressReporter(ctx context.Context, progChan <-chan progressUpdate, done 
 	for {
 		select {
 		case <-ctx.Done():
-			// If the user interrupted, clear the line and exit.
 			fmt.Printf("\r\033[K")
 			done <- true
 			return
 
 		case upd, ok := <-progChan:
 			if !ok {
-				// If BFS ended (channel closed), clear line and exit.
 				fmt.Printf("\r\033[K")
 				done <- true
 				return
 			}
-			// Store the most recent update to print on the next tick.
 			last = upd
 
 		case <-ticker.C:
-			// Print the last known update in a single terminal line, with color/bold.
-			fmt.Printf("\r\033[K") // Clear the current line.
+			fmt.Printf("\r\033[K") // Clear the line
 
 			shortDir := shortenPath(last.CurrentDir, 40)
 			fmt.Printf("%sScanning:%s %s%-40s%s | %sDirs:%s %d | %sSize:%s %s",
@@ -451,61 +424,53 @@ func progressReporter(ctx context.Context, progChan <-chan progressUpdate, done 
    ------------------------------------------------------------------------------------
    MAIN FUNCTION
    ------------------------------------------------------------------------------------
-   1) Parse command-line flags (help, version, top, slow-threshold, exclude).
-   2) Determine root directory to scan (default "/" or "." if "/" doesn't exist).
-   3) Set up context cancellation on interrupt (SIGINT).
-   4) Start the progressReporter goroutine.
-   5) Perform BFS scan in the main goroutine.
-   6) On completion, print the top N largest directories, including file-type proportions.
+   1) Parse flags (help, version, top, slow-threshold, exclude) in any order.
+   2) Decide the root directory ("/" or "." if "/" doesn't exist).
+   3) Set up SIGINT interrupt handling to gracefully stop scanning.
+   4) Launch a goroutine for progressReporter.
+   5) BFS-scan in the main goroutine.
+   6) Print top N largest directories with file-type proportions (each category colored).
 */
 
 func main() {
-	// Define custom usage instructions.
 	flag.Usage = func() {
 		fmt.Println("Usage: find-large-dirs [directory] [--top <N>] [--slow-threshold <duration>]")
 		fmt.Println("                         [--exclude <path>] (repeatable)")
 		fmt.Println("                         [--help] [--version]")
 		fmt.Println("")
 		fmt.Println("Simple BFS across all subdirectories in one thread, prints immediate progress,")
-		fmt.Println("and partial results if interrupted. No OS-specific calls. Compiles on all platforms.")
-		fmt.Println("Also shows file-type proportions in each directory.")
+		fmt.Println("partial results if interrupted, and shows file-type proportions in each directory.")
+		fmt.Println("Compiles on all platforms without OS-specific calls.")
 	}
 
 	helpFlag := flag.Bool("help", false, "Show this help message")
-	topFlag := flag.Int("top", 15, "How many top-largest directories to display (default 15)")
+	topFlag := flag.Int("top", 15, "Number of top-largest directories to display (default 15)")
 	slowFlag := flag.Duration("slow-threshold", 2*time.Second,
-		"Max time to scan a single directory before skipping it (e.g., 2s, 500ms)")
+		"Max time to scan a directory before skipping it (e.g., 2s, 500ms)")
 	versFlag := flag.Bool("version", false, "Show version")
 
 	var excludeFlag multiFlag
 	flag.Var(&excludeFlag, "exclude", "Specify paths to ignore (repeatable)")
 
-	// Parse flags (works in any order).
 	flag.Parse()
 
-	// If --help was requested, print usage and exit.
 	if *helpFlag {
 		flag.Usage()
 		return
 	}
-
-	// If --version was requested, print version and exit.
 	if *versFlag {
 		fmt.Printf("find-large-dirs version: %s\n", version)
 		return
 	}
 
-	// Determine the root directory to scan. Default: "/" or "." if "/" doesn't exist.
 	root := "/"
 	if _, err := os.Stat(root); os.IsNotExist(err) {
 		root = "."
 	}
-	// If user provided a directory argument, use that instead.
 	if flag.NArg() > 0 {
 		root = flag.Arg(0)
 	}
 
-	// Set up context cancellation upon receiving interrupt (SIGINT).
 	ctx, cancel := context.WithCancel(context.Background())
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
@@ -515,23 +480,18 @@ func main() {
 		cancel()
 	}()
 
-	// Inform the user which directory is being scanned.
 	fmt.Printf("Scanning '%s'...\n\n", root)
 
-	// Start the progress reporter goroutine.
 	progChan := make(chan progressUpdate, 10)
 	doneChan := make(chan bool)
 	go progressReporter(ctx, progChan, doneChan)
 
-	// Perform the BFS scan in the main goroutine.
 	folders := bfsScan(ctx, root, excludeFlag, *slowFlag, progChan)
 
-	// Close the progress channel and wait for the reporter to finish.
 	close(progChan)
 	<-doneChan
 	fmt.Println()
 
-	// Print the top N largest directories.
 	fmt.Printf("Top %d largest directories in '%s':\n", *topFlag, root)
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 
@@ -545,7 +505,6 @@ func main() {
 			note = " (skipped)"
 		}
 
-		// Print each directory's size, path (in bold), note, and file-type proportions.
 		fmt.Fprintf(tw,
 			"%-12s\t%s%s%s%s\n",
 			formatSize(fs.Size),
