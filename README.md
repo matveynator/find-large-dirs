@@ -11,7 +11,8 @@ We’ve made it easy for you. Copy, paste, and go!
 ### **Linux (AMD64)**
 
 ```bash
-sudo curl -L https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/amd64/find-large-dirs -o /usr/local/bin/find-large-dirs; sudo chmod +x /usr/local/bin/find-large-dirs; find-large-dirs --version;```
+sudo curl -L https://files.zabiyaka.net/find-large-dirs/latest/no-gui/linux/amd64/find-large-dirs -o /usr/local/bin/find-large-dirs; sudo chmod +x /usr/local/bin/find-large-dirs; find-large-dirs --version;
+```
 
 ### **Linux (ARM64)**
 
@@ -42,7 +43,8 @@ sudo curl -L https://files.zabiyaka.net/find-large-dirs/latest/no-gui/freebsd/am
 ### **FreeBSD (ARM64)**
 
 ```bash
-sudo curl -L https://files.zabiyaka.net/find-large-dirs/latest/no-gui/freebsd/arm64/find-large-dirs -o /usr/local/bin/find-large-dirs; sudo chmod +x /usr/local/bin/find-large-dirs; find-large-dirs --version;```
+sudo curl -L https://files.zabiyaka.net/find-large-dirs/latest/no-gui/freebsd/arm64/find-large-dirs -o /usr/local/bin/find-large-dirs; sudo chmod +x /usr/local/bin/find-large-dirs; find-large-dirs --version;
+```
 
 ### **OpenBSD (AMD64)**
 
