@@ -85,7 +85,7 @@ Here is the table with **direct download links** for all available platforms and
 ### **Basic Command**
 
 ```bash
-find-large-dirs / --top 5
+find-large-dirs /
 ```
 
 ### **Example Output**
@@ -94,7 +94,7 @@ find-large-dirs / --top 5
 Scanning directory: /tmp/
 Progress: 100.00%
 
-Top 5 Directories by Size:
+Top 20 Directories by Size:
 727.48 GB    /home
 105.87 GB    /backup
 91.97 GB     /root
@@ -106,6 +106,7 @@ Top 5 Directories by Size:
 - `--top <number>`: Display the top N largest directories (default: 20).
 - `--slow-threshold <duration>`: Set a threshold for marking slow directories (default: `2s`).
 - `--version`: Show the program version.
+- `--exclude /path1 --exclude /path2`: Exclude /path1 /path2 from calculations.
 - `--help`: Display help information.
 
 ---
