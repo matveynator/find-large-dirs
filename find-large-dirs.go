@@ -92,7 +92,7 @@ const (
 func getColorForCategory(cat string) string {
 	switch cat {
 	case "Image":
-		return ColorGreen
+		return ColorYellow
 	case "Video":
 		return ColorMagenta
 	case "Audio":
@@ -110,7 +110,7 @@ func getColorForCategory(cat string) string {
 	case "Database":
 		return ColorMagenta
 	case "DB-Backup":
-	  return ColorGreen
+	  return ColorYellow
 	case "Backup":
 		return ColorRed
 	case "Disk Image":
@@ -120,7 +120,7 @@ func getColorForCategory(cat string) string {
 	case "Font":
 		return ColorCyan
 	case "Web":
-		return ColorGreen
+		return ColorYellow
 	case "Spreadsheet":
 		return ColorMagenta
 	case "Presentation":
