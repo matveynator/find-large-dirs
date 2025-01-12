@@ -1,5 +1,47 @@
 # **`find-large-dirs` - Scan and Find Large Folders Quickly**
 
+```plaintext
+files.randomserver.net | root@files ~ $ find-large-dirs /backup/
+Scanning '/backup/'...
+
+Scanning: /backup/192.168.1.100/vservers/server01... | Dirs: 37399 | Size: 16480.84 GB^C
+Interrupted. Finalizing...
+
+Top 15 largest directories in '/backup/':
+4184.38 GB    /backup/infra.example.net/backup-server/backup/static.101.102.103.104.clients.example.com/sql (+220427.32 MB, +5.42%)
+               -> File types: 100.00% Archive, 0.00% Document
+2271.62 GB    /backup/code.example.net/backup/archives (+14255.33 MB, +0.62%)
+               -> File types: 100.00% Archive, 0.00% Other
+1415.92 GB    /backup/data.example.com/backup/data.example.com/sql (+42054.95 MB, +2.99%)
+               -> File types: 100.00% Archive
+1363.93 GB    /backup/infra.example.net/backup-server/backup/static.102.103.104.105.clients.example.com/sql (+64629.97 MB, +4.85%)
+               -> File types: 100.00% Archive, 0.00% Document
+1003.08 GB    /backup/infra.example.net/backup-server/backup/app.example.com (+28318.83 MB, +2.84%)
+               -> File types: 99.67% Archive, 0.33% Other, 0.00% Application
+585.23 GB     /backup/infra.example.net/backup-server/backup/static.203.204.205.206.clients.example.com/sql (+27490.80 MB, +4.81%)
+               -> File types: 100.00% Archive, 0.00% Document
+581.46 GB     /backup/infra.example.net/backup-server/backup/project.net/sql (+27469.23 MB, +4.84%)
+               -> File types: 100.00% Archive, 0.00% Document
+350.87 GB     /backup/service-node/reserv-web/backup/data
+               -> File types: 100.00% Archive, 0.00% Other
+251.10 GB     /backup/203.0.113.100/app.example.com/rootfs/backup/archives (-22919.93 MB, -8.18%)
+               -> File types: 98.19% Archive, 1.81% Other, 0.00% Application
+193.09 GB     /backup/service-node/reserv-db/backup/static.104.105.106.107.clients.example.com/sql
+               -> File types: 100.00% Archive
+125.53 GB     /backup/cloud-storage/example.app/rootfs/backup/mongo
+               -> File types: 100.00% DB-Backup
+116.76 GB     /backup/infra.example.net/backup-server/backup/cards.example/sql (+5368.57 MB, +4.70%)
+               -> File types: 100.00% Archive
+105.15 GB     /backup/partner.example.com-centos/backup/partner.example.com-centos (+356.57 MB, +0.33%)
+               -> File types: 100.00% Other
+101.53 GB     /backup/data.example.com/backup/archives (+3296.47 MB, +3.27%)
+               -> File types: 100.00% Archive, 0.00% Other
+62.92 GB      /backup/192.168.1.100/vservers/php7/opt/cache
+               -> File types: 100.00% Archive
+
+Time since last scan: 67h17m2s
+```
+
 ---
 
 **find-large-dirs** — это мощная программа для быстрого поиска и анализа **больших файлов** и **директорий** на вашем диске. Она поможет вам освободить место, находя самые объёмные элементы на диске, и позволяет легко управлять **дисковым пространством**. Вы можете искать **файлы по размеру**, чтобы быстро идентифицировать и удалить ненужные **большие файлы** и **большие директории**, освободив место на **жестком диске** или **SSD**.
@@ -137,50 +179,6 @@ Here is the table with **direct download links** for all available platforms and
 ---
 
 ## **How to Use**
-
-### **Basic Example**
-
-```plaintext
-files.randomserver.net | root@files ~ $ find-large-dirs /backup/
-Scanning '/backup/'...
-
-Scanning: /backup/192.168.1.100/vservers/server01... | Dirs: 37399 | Size: 16480.84 GB^C
-Interrupted. Finalizing...
-
-Top 15 largest directories in '/backup/':
-4184.38 GB    /backup/infra.example.net/backup-server/backup/static.101.102.103.104.clients.example.com/sql (+220427.32 MB, +5.42%)
-               -> File types: 100.00% Archive, 0.00% Document
-2271.62 GB    /backup/code.example.net/backup/archives (+14255.33 MB, +0.62%)
-               -> File types: 100.00% Archive, 0.00% Other
-1415.92 GB    /backup/data.example.com/backup/data.example.com/sql (+42054.95 MB, +2.99%)
-               -> File types: 100.00% Archive
-1363.93 GB    /backup/infra.example.net/backup-server/backup/static.102.103.104.105.clients.example.com/sql (+64629.97 MB, +4.85%)
-               -> File types: 100.00% Archive, 0.00% Document
-1003.08 GB    /backup/infra.example.net/backup-server/backup/app.example.com (+28318.83 MB, +2.84%)
-               -> File types: 99.67% Archive, 0.33% Other, 0.00% Application
-585.23 GB     /backup/infra.example.net/backup-server/backup/static.203.204.205.206.clients.example.com/sql (+27490.80 MB, +4.81%)
-               -> File types: 100.00% Archive, 0.00% Document
-581.46 GB     /backup/infra.example.net/backup-server/backup/project.net/sql (+27469.23 MB, +4.84%)
-               -> File types: 100.00% Archive, 0.00% Document
-350.87 GB     /backup/service-node/reserv-web/backup/data
-               -> File types: 100.00% Archive, 0.00% Other
-251.10 GB     /backup/203.0.113.100/app.example.com/rootfs/backup/archives (-22919.93 MB, -8.18%)
-               -> File types: 98.19% Archive, 1.81% Other, 0.00% Application
-193.09 GB     /backup/service-node/reserv-db/backup/static.104.105.106.107.clients.example.com/sql
-               -> File types: 100.00% Archive
-125.53 GB     /backup/cloud-storage/example.app/rootfs/backup/mongo
-               -> File types: 100.00% DB-Backup
-116.76 GB     /backup/infra.example.net/backup-server/backup/cards.example/sql (+5368.57 MB, +4.70%)
-               -> File types: 100.00% Archive
-105.15 GB     /backup/partner.example.com-centos/backup/partner.example.com-centos (+356.57 MB, +0.33%)
-               -> File types: 100.00% Other
-101.53 GB     /backup/data.example.com/backup/archives (+3296.47 MB, +3.27%)
-               -> File types: 100.00% Archive, 0.00% Other
-62.92 GB      /backup/192.168.1.100/vservers/php7/opt/cache
-               -> File types: 100.00% Archive
-
-Time since last scan: 67h17m2s
-```
 
 **Options:**
 - `--top <number>`: Display the top N largest directories (default: 20).
