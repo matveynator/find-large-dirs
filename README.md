@@ -141,7 +141,6 @@ Here is the table with **direct download links** for all available platforms and
 ### **Basic Example**
 
 ```plaintext
-```bash
 files.randomserver.net | root@files ~ $ find-large-dirs /backup/
 Scanning '/backup/'...
 
