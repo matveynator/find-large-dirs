@@ -141,41 +141,46 @@ Here is the table with **direct download links** for all available platforms and
 ### **Basic Example**
 
 ```plaintext
-find-large-dirs /System/Applications/
-Scanning '/System/Applications/'...
+```bash
+files.randomserver.net | root@files ~ $ find-large-dirs /backup/
+Scanning '/backup/'...
 
+Scanning: /backup/192.168.1.100/vservers/server01... | Dirs: 37399 | Size: 16480.84 GB^C
+Interrupted. Finalizing...
 
-Top 30 largest directories in '/System/Applications/':
-59.82 MB    /System/Applications/Music.app/Contents/MacOS
-43.32 MB    /System/Applications/Books.app/Contents/MacOS
-39.75 MB    /System/Applications/TV.app/Contents/MacOS
-34.09 MB    /System/Applications/Freeform.app/Contents/MacOS
-32.08 MB    /System/Applications/Maps.app/Contents/MacOS
-21.55 MB    /System/Applications/Weather.app/Contents/MacOS
-19.44 MB    /System/Applications/Maps.app/Contents/Resources
-18.18 MB    /System/Applications/Photos.app/Contents/MacOS
-16.64 MB    /System/Applications/Music.app/Contents/Resources
-16.41 MB    /System/Applications/TV.app/Contents/Resources
-14.84 MB    /System/Applications/FindMy.app/Contents/Resources
-14.83 MB    /System/Applications/Photos.app/Contents/Resources
-14.24 MB    /System/Applications/Notes.app/Contents/MacOS
-13.78 MB    /System/Applications/Freeform.app/Contents/Resources
-13.09 MB    /System/Applications/Dictionary.app/Contents/Resources
-11.91 MB    /System/Applications/FindMy.app/Contents/MacOS
-11.43 MB    /System/Applications/App Store.app/Contents/MacOS
-11.22 MB    /System/Applications/Reminders.app/Contents/MacOS
-11.07 MB    /System/Applications/Podcasts.app/Contents/MacOS
-10.36 MB    /System/Applications/Mail.app/Contents/MacOS
-10.10 MB    /System/Applications/Utilities/AirPort Utility.app/Contents/Resources
-9.76 MB     /System/Applications/Books.app/Contents/Resources
-9.48 MB     /System/Applications/Maps.app/Contents/PlugIns/MapsAppKitBundle.bundle/Contents/Resources
-9.16 MB     /System/Applications/Podcasts.app/Contents/Frameworks/PodcastsStoreUI.framework/Versions/A
-8.65 MB     /System/Applications/Books.app/Contents/Frameworks/BookCore.framework/Versions/A
-7.65 MB     /System/Applications/Font Book.app/Contents/MacOS
-7.52 MB     /System/Applications/Mail.app/Contents/Resources
-6.81 MB     /System/Applications/Podcasts.app/Contents/Frameworks/AppStoreKit.framework/Versions/A
-6.62 MB     /System/Applications/Notes.app/Contents/Resources
-6.53 MB     /System/Applications/Books.app/Contents/Frameworks/TemplateUI.framework/Versions/A
+Top 15 largest directories in '/backup/':
+4184.38 GB    /backup/infra.example.net/backup-server/backup/static.101.102.103.104.clients.example.com/sql (+220427.32 MB, +5.42%)
+               -> File types: 100.00% Archive, 0.00% Document
+2271.62 GB    /backup/code.example.net/backup/archives (+14255.33 MB, +0.62%)
+               -> File types: 100.00% Archive, 0.00% Other
+1415.92 GB    /backup/data.example.com/backup/data.example.com/sql (+42054.95 MB, +2.99%)
+               -> File types: 100.00% Archive
+1363.93 GB    /backup/infra.example.net/backup-server/backup/static.102.103.104.105.clients.example.com/sql (+64629.97 MB, +4.85%)
+               -> File types: 100.00% Archive, 0.00% Document
+1003.08 GB    /backup/infra.example.net/backup-server/backup/app.example.com (+28318.83 MB, +2.84%)
+               -> File types: 99.67% Archive, 0.33% Other, 0.00% Application
+585.23 GB     /backup/infra.example.net/backup-server/backup/static.203.204.205.206.clients.example.com/sql (+27490.80 MB, +4.81%)
+               -> File types: 100.00% Archive, 0.00% Document
+581.46 GB     /backup/infra.example.net/backup-server/backup/project.net/sql (+27469.23 MB, +4.84%)
+               -> File types: 100.00% Archive, 0.00% Document
+350.87 GB     /backup/service-node/reserv-web/backup/data
+               -> File types: 100.00% Archive, 0.00% Other
+251.10 GB     /backup/203.0.113.100/app.example.com/rootfs/backup/archives (-22919.93 MB, -8.18%)
+               -> File types: 98.19% Archive, 1.81% Other, 0.00% Application
+193.09 GB     /backup/service-node/reserv-db/backup/static.104.105.106.107.clients.example.com/sql
+               -> File types: 100.00% Archive
+125.53 GB     /backup/cloud-storage/example.app/rootfs/backup/mongo
+               -> File types: 100.00% DB-Backup
+116.76 GB     /backup/infra.example.net/backup-server/backup/cards.example/sql (+5368.57 MB, +4.70%)
+               -> File types: 100.00% Archive
+105.15 GB     /backup/partner.example.com-centos/backup/partner.example.com-centos (+356.57 MB, +0.33%)
+               -> File types: 100.00% Other
+101.53 GB     /backup/data.example.com/backup/archives (+3296.47 MB, +3.27%)
+               -> File types: 100.00% Archive, 0.00% Other
+62.92 GB      /backup/192.168.1.100/vservers/php7/opt/cache
+               -> File types: 100.00% Archive
+
+Time since last scan: 67h17m2s
 ```
 
 **Options:**
