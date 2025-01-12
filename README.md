@@ -86,6 +86,34 @@ sudo curl -L https://files.zabiyaka.net/find-large-dirs/latest/no-gui/openbsd/am
 sudo curl -L https://files.zabiyaka.net/find-large-dirs/latest/no-gui/openbsd/arm64/find-large-dirs -o /usr/local/bin/find-large-dirs; sudo chmod +x /usr/local/bin/find-large-dirs; find-large-dirs --version;
 ```
 
+### **Windows (AMD64)**
+
+```cmd
+certutil -urlcache -split -f https://files.zabiyaka.net/find-large-dirs/latest/no-gui/windows/amd64/find-large-dirs.exe "C:\Windows\System32\find-large-dirs.exe"
+find-large-dirs --version
+```
+
+### **Windows (ARM64)**
+
+```cmd
+certutil -urlcache -split -f https://files.zabiyaka.net/find-large-dirs/latest/no-gui/windows/arm64/find-large-dirs.exe "C:\Windows\System32\find-large-dirs.exe"
+find-large-dirs --version
+```
+
+### **Windows (386)**
+
+```cmd
+certutil -urlcache -split -f https://files.zabiyaka.net/find-large-dirs/latest/no-gui/windows/386/find-large-dirs.exe "C:\Windows\System32\find-large-dirs.exe"
+find-large-dirs --version
+```
+
+### **Windows (ARM)**
+
+```cmd
+certutil -urlcache -split -f https://files.zabiyaka.net/find-large-dirs/latest/no-gui/windows/arm/find-large-dirs.exe "C:\Windows\System32\find-large-dirs.exe"
+find-large-dirs --version
+```
+
 Other platforms and architectures? Don’t worry, we’ve got you covered. See the table below for the full list.
 
 Here is the table with **direct download links** for all available platforms and architectures.
