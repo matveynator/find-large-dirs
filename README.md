@@ -1,34 +1,34 @@
 # **`find-large-dirs` - Scan and Find Large Folders Quickly**
----
-
-**find-large-dirs** — это мощная программа для быстрого поиска и анализа больших файлов и директорий на вашем диске. Она поможет вам освободить место, находя самые объёмные элементы на диске, и позволяет легко управлять пространством.
-
-Ищете утилиту для поиска больших файлов? **find-large-dirs** поможет вам найти и удалить ненужные большие файлы и директории, освобождая место на жестком диске или SSD.
 
 ---
 
-**find-large-dirs** is a powerful tool designed to quickly find and analyze large files and directories on your disk. It helps you reclaim valuable disk space by identifying the largest files and directories.
+**find-large-dirs** — это мощная программа для быстрого поиска и анализа **больших файлов** и **директорий** на вашем диске. Она поможет вам освободить место, находя самые объёмные элементы на диске, и позволяет легко управлять **дисковым пространством**. Вы можете искать **файлы по размеру**, чтобы быстро идентифицировать и удалить ненужные **большие файлы** и **большие директории**, освободив место на **жестком диске** или **SSD**.
 
-Looking for a way to find large files? **find-large-dirs** makes it easy to locate and manage oversized files and directories, helping you free up disk space with ease.
-
----
-
-**find-large-dirs** est un outil puissant pour rechercher et analyser rapidement de gros fichiers et répertoires sur votre disque. Il vous aide à libérer de l'espace disque en identifiant les fichiers et répertoires les plus volumineux.
-
-Vous cherchez à trouver de gros fichiers ? **find-large-dirs** permet de localiser et gérer facilement les fichiers et répertoires volumineux, vous aidant ainsi à libérer de l'espace disque.
+Ищете утилиту для поиска **больших файлов** и анализа **дискового пространства**? **find-large-dirs** помогает находить **большие файлы** и **директории**, что поможет вам освободить **место на диске**, управлять **памятью** и освобождать **место на жестком диске** или **SSD**.
 
 ---
 
-**find-large-dirs** es una herramienta poderosa diseñada para encontrar y analizar rápidamente archivos y directorios grandes en tu disco. Te ayuda a recuperar espacio valioso en el disco identificando los archivos y directorios más grandes.
+**find-large-dirs** is a powerful tool designed to quickly find and analyze **large files** and **directories** on your disk. It helps you reclaim valuable **disk space** by identifying the largest **files** and **directories**. You can search **files by size** to quickly locate and manage oversized **files** and **directories**, freeing up valuable space on your **hard drive** or **SSD**.
 
-¿Buscas una forma de encontrar archivos grandes? **find-large-dirs** facilita la localización y gestión de archivos y directorios grandes, ayudándote a liberar espacio en el disco con facilidad.
+Looking for a tool to find **large files** and analyze **disk space**? **find-large-dirs** helps you locate **large files** and **directories**, manage **disk space**, and reclaim precious **hard drive** or **SSD** space.
 
 ---
 
-**find-large-dirs** はディスク上の大きなファイルとディレクトリを迅速に検索・分析する強力なツールです。ディスク上で最も容量の大きいファイルとディレクトリを見つけて、貴重なディスクスペースを取り戻すことができます。
+**find-large-dirs** est un outil puissant pour rechercher et analyser rapidement de **gros fichiers** et **répertoires** sur votre disque. Il vous aide à libérer de l'**espace disque** en identifiant les fichiers et répertoires les plus volumineux. Vous pouvez rechercher **fichiers par taille** pour trouver rapidement et gérer les **gros fichiers** et **répertoires**, libérant ainsi de l'**espace sur votre disque dur** ou **SSD**.
 
-大きなファイルを検索する方法をお探しですか？ **find-large-dirs** は、大きなファイルやディレクトリを簡単に見つけて管理し、ディスクスペースを効率的に解放する手助けをします。
+Vous cherchez un outil pour trouver de **gros fichiers** et analyser votre **espace disque** ? **find-large-dirs** permet de localiser facilement les **gros fichiers** et **répertoires**, gérer votre **espace disque**, et récupérer de l'**espace sur votre disque dur** ou **SSD**.
 
+---
+
+**find-large-dirs** es una herramienta poderosa diseñada para encontrar y analizar rápidamente **archivos grandes** y **directorios** en tu disco. Te ayuda a recuperar espacio valioso en el **disco** identificando los **archivos** y **directorios** más grandes. Puedes buscar **archivos por tamaño** para localizar rápidamente y gestionar **archivos grandes** y **directorios**, liberando así **espacio en el disco** o **SSD**.
+
+¿Buscas una herramienta para encontrar **archivos grandes** y analizar tu **espacio en disco**? **find-large-dirs** te ayuda a localizar **archivos grandes** y **directorios**, gestionar tu **espacio en disco**, y recuperar **espacio en el disco duro** o **SSD**.
+
+---
+
+**find-large-dirs** はディスク上の**大きなファイル**と**ディレクトリ**を迅速に検索・分析する強力なツールです。ディスク上で最も容量の大きい**ファイル**と**ディレクトリ**を見つけて、貴重な**ディスクスペース**を取り戻すことができます。**ファイルサイズによる検索**を使用して、大きな**ファイル**や**ディレクトリ**をすばやく見つけ、管理することができます。
+
+**大きなファイル**を検索する方法をお探しですか？ **find-large-dirs** は、**大きなファイル**や**ディレクトリ**を簡単に見つけて管理し、**ディスクスペース**を効率的に解放する手助けをします。
 
 ---
 
