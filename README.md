@@ -1,7 +1,7 @@
 # **`find-large-dirs` - Scan and Find Large Folders Quickly**
 
 ```plaintext
-files.randomserver.net | root@files ~ $ find-large-dirs /backup/
+find-large-dirs /backup/
 Scanning '/backup/'...
 
 Scanning: /backup/192.168.1.100/vservers/server01... | Dirs: 37399 | Size: 16480.84 GB^C
