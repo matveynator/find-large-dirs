@@ -1,80 +1,47 @@
-// File: find-large-dirs.go
-//
-// A single-file BFS directory scanner that compiles on all Go platforms:
-//  - No "syscall" references, no OS-specific calls.
-//  - Shows immediate, colored progress and partial results on interrupt.
-//  - Skips any duplication or network FS detection to remain universal.
-//  - NEW: Calculates file-type proportions (e.g., 20% Images, 30% Video, etc.),
-//         now color-coded by category.
-//
-// Usage: find-large-dirs [directory] [--top <N>] [--slow-threshold <duration>]
-//                        [--exclude <path>] (repeatable)
-//                        [--help] [--version]
-//
-// Default: shows top 15 largest directories.
-//
-// Example: find-large-dirs /home --top 20 --exclude /home/user/cache --slow-threshold 3s
-//
-// Author: github.com/matveynator
-
 package main
 
 import (
 	"container/list"
 	"context"
-	"encoding/json" // <- ADDED for JSON storage
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
-	"text/tabwriter"
 	"time"
 )
 
-/*
-   ------------------------------------------------------------------------------------
-   GLOBALS & DATA STRUCTURES
-   ------------------------------------------------------------------------------------
-*/
+var version = "v2.1"
 
-var version = "dev" // Can be set at build time.
-
-// FolderSize holds info about each directory: path, size, skip-flag, file-type size map.
 type FolderSize struct {
-	Path      string
-	Size      int64
-	Skipped   bool
-	FileTypes map[string]int64
+	Path      string           `json:"path"`
+	Size      int64            `json:"size_bytes"`
+	Total     int64            `json:"total_bytes"`
+	FileCount int64            `json:"file_count"`
+	Oldest    time.Time        `json:"oldest_mtime"`
+	Newest    time.Time        `json:"newest_mtime"`
+	Skipped   bool             `json:"skipped"`
+	FileTypes map[string]int64 `json:"types_bytes"`
 }
 
-// progressUpdate is sent to the progressReporter goroutine to display scanning progress.
 type progressUpdate struct {
 	CurrentDir string
 	NumDirs    int64
 	BytesTotal int64
 }
 
-// multiFlag is used to support multiple --exclude flags.
 type multiFlag []string
 
-func (m *multiFlag) String() string {
-	return strings.Join(*m, ", ")
-}
-func (m *multiFlag) Set(value string) error {
-	*m = append(*m, value)
-	return nil
-}
-
-/*
-   ------------------------------------------------------------------------------------
-   ANSI COLOR CODES (including a new function for category-based colors)
-   ------------------------------------------------------------------------------------
-*/
+func (m *multiFlag) String() string { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
 const (
 	ColorReset   = "\033[0m"
@@ -87,10 +54,8 @@ const (
 	Bold         = "\033[1m"
 )
 
-// getColorForCategory returns an ANSI color code based on the file category name.
-// You can customize this mapping as you wish.
-func getColorForCategory(cat string) string {
-	switch cat {
+func getColorForCategory(c string) string {
+	switch c {
 	case "Image":
 		return ColorYellow
 	case "Video":
@@ -110,7 +75,7 @@ func getColorForCategory(cat string) string {
 	case "Database":
 		return ColorMagenta
 	case "DB-Backup":
-	  return ColorYellow
+		return ColorYellow
 	case "Backup":
 		return ColorRed
 	case "Disk Image":
@@ -130,44 +95,59 @@ func getColorForCategory(cat string) string {
 	}
 }
 
-/*
-   ------------------------------------------------------------------------------------
-   HELPER UTILITIES
-   ------------------------------------------------------------------------------------
-*/
-
-// formatSize converts a size in bytes to a human-readable KB/MB/GB string.
-func formatSize(sz int64) string {
+func formatSize(b int64) string {
 	switch {
-	case sz >= 1<<30:
-		return fmt.Sprintf("%.2f GB", float64(sz)/(1<<30))
-	case sz >= 1<<20:
-		return fmt.Sprintf("%.2f MB", float64(sz)/(1<<20))
+	case b >= 1<<40:
+		return fmt.Sprintf("%.2f TB", float64(b)/(1<<40))
+	case b >= 1<<30:
+		return fmt.Sprintf("%.2f GB", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.2f MB", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(b)/(1<<10))
 	default:
-		// Fallback for smaller sizes; displayed in KB.
-		return fmt.Sprintf("%d KB", sz/(1<<10))
+		return fmt.Sprintf("%d B", b)
 	}
 }
 
-// shortenPath truncates a path for display if it exceeds maxLen, appending "..." at the end.
-func shortenPath(path string, maxLen int) string {
-	if len(path) <= maxLen {
-		return path
+func shortenPath(p string, n int) string {
+	if len(p) <= n {
+		return p
 	}
-	return path[:maxLen-3] + "..."
+	return p[:n-3] + "..."
 }
 
-// isExcluded checks whether a given path should be skipped by userExcludes or system directories.
-func isExcluded(path string, userExcludes []string) bool {
-	// Check user-provided excludes.
-	for _, ex := range userExcludes {
-		if strings.HasPrefix(path, ex) {
+func parseSize(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	re := regexp.MustCompile(`^([0-9]*\.?[0-9]+)\s*([KMGTP]?)B?$`)
+	m := re.FindStringSubmatch(s)
+	if m == nil {
+		return 0, errors.New("bad size")
+	}
+	v, _ := strconv.ParseFloat(m[1], 64)
+	mult := int64(1)
+	switch m[2] {
+	case "K":
+		mult = 1 << 10
+	case "M":
+		mult = 1 << 20
+	case "G":
+		mult = 1 << 30
+	case "T":
+		mult = 1 << 40
+	case "P":
+		mult = 1 << 50
+	}
+	return int64(v * float64(mult)), nil
+}
+
+func isExcluded(p string, ex []string) bool {
+	for _, e := range ex {
+		if strings.HasPrefix(p, e) {
 			return true
 		}
 	}
-	// Check standard system/pseudo directories.
-	base := filepath.Base(path)
-	switch strings.ToLower(base) {
+	switch strings.ToLower(filepath.Base(p)) {
 	case "proc", "sys", "dev", "run", "tmp", "var":
 		return true
 	default:
@@ -175,11 +155,8 @@ func isExcluded(path string, userExcludes []string) bool {
 	}
 }
 
-// classifyExtension groups files by common extensions: Image, Video, Audio, Archive, etc.
-func classifyExtension(fileName string) string {
-	ext := strings.ToLower(filepath.Ext(fileName))
-
-	switch ext {
+func classifyExtension(n string) string {
+	switch strings.ToLower(filepath.Ext(n)) {
 	case ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".raw", ".webp", ".heic", ".heif":
 		return "Image"
 	case ".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".webm", ".m4v":
@@ -194,21 +171,21 @@ func classifyExtension(fileName string) string {
 		return "Application"
 	case ".go", ".c", ".cpp", ".h", ".hpp", ".js", ".ts", ".py", ".java", ".sh", ".rb", ".php":
 		return "Code"
-	case ".log", ".trace", ".log.gz", ".log.bz2":
+	case ".log", ".trace":
 		return "Log"
-	case ".db", ".sqlite", ".sqlite3", ".mdb", ".accdb", ".ndb", ".frm", ".ibd", ".myd", ".myi", ".rdb", ".aof", ".wal", ".shm", ".journal":
+	case ".db", ".sqlite", ".sqlite3", ".rdb":
 		return "Database"
-	case ".bak", ".backup", ".bkp", ".ab":
+	case ".bak", ".backup":
 		return "Backup"
-  case ".sql", ".sql.gz", ".dump.gz", ".dump", ".cma":
-	    return "DB-Backup"
-	case ".iso", ".img", ".vhd", ".vhdx", ".vmdk", ".qcow2", ".qcow", ".dd", ".dsk":
+	case ".sql":
+		return "DB-Backup"
+	case ".iso", ".img", ".vhd", ".vhdx", ".vmdk":
 		return "Disk Image"
-	case ".conf", ".cfg", ".ini", ".yaml", ".yml", ".json", ".xml", ".toml":
+	case ".conf", ".cfg", ".ini", ".yaml", ".yml", ".json", ".xml":
 		return "Configuration"
-	case ".ttf", ".otf", ".woff", ".woff2", ".eot":
+	case ".ttf", ".otf", ".woff":
 		return "Font"
-	case ".html", ".htm", ".css", ".scss", ".less":
+	case ".html", ".htm", ".css":
 		return "Web"
 	case ".ods", ".xls", ".xlsx", ".csv":
 		return "Spreadsheet"
@@ -219,421 +196,323 @@ func classifyExtension(fileName string) string {
 	}
 }
 
-// formatFileTypeRatios builds a string like "20.00% Image, 30.00% Video, 50.00% Other"
-// with categories in descending order of size, each category in its own color.
-func formatFileTypeRatios(fileTypes map[string]int64, totalSize int64) string {
-	if totalSize == 0 {
-		return "No files"
+func formatFileTypeRatios(m map[string]int64, total int64) string {
+	if total == 0 {
+		return "empty"
 	}
-
-	var pairs []struct {
-		Cat  string
-		Size int64
+	type pair struct {
+		C string
+		S int64
 	}
-	for cat, sz := range fileTypes {
-		if sz > 0 {
-			pairs = append(pairs, struct {
-				Cat  string
-				Size int64
-			}{cat, sz})
+	var ps []pair
+	for c, s := range m {
+		if s > 0 {
+			ps = append(ps, pair{c, s})
 		}
 	}
-
-	// Sort by descending size.
-	sort.Slice(pairs, func(i, j int) bool {
-		return pairs[i].Size > pairs[j].Size
-	})
-
-	var parts []string
-	for _, p := range pairs {
-		percent := float64(p.Size) / float64(totalSize) * 100
-		catColor := getColorForCategory(p.Cat)
-
-		parts = append(parts,
-			fmt.Sprintf("%s%.2f%%%s %s%s%s",
-				ColorGreen,         // color for the percentage value
-				percent,
-				ColorReset,
-				catColor,           // color for the category text
-				p.Cat,
-				ColorReset,
-			),
-		)
+	sort.Slice(ps, func(i, j int) bool { return ps[i].S > ps[j].S })
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, fmt.Sprintf("%s%.1f%%%s %s%s%s", ColorGreen, float64(p.S)*100/float64(total), ColorReset, getColorForCategory(p.C), p.C, ColorReset))
 	}
-
-	return strings.Join(parts, ", ")
+	return strings.Join(out, ", ")
 }
-
-/*
-   ------------------------------------------------------------------------------------
-   FUNCTIONS TO LOAD/SAVE PREVIOUS DATA (JSON)
-   ------------------------------------------------------------------------------------
-   We store previous run results in the user's home directory: ~/.find-large-dirs/db.json
-   It contains a list of (Path, Size) pairs. Then we can compute diffs at next run.
-*/
 
 type dbEntry struct {
 	Path string `json:"path"`
-	Size int64  `json:"size"`
+	Sz   int64  `json:"size"`
 }
-
 type dbData struct {
-	Timestamp time.Time  `json:"timestamp"`
-	Entries   []dbEntry  `json:"entries"`
+	Timestamp time.Time `json:"timestamp"`
+	Entries   []dbEntry `json:"entries"`
 }
 
-// getDbPath returns the path to the JSON file in ~/.find-large-dirs/db.json
-func getDbPath() string {
-	homeDir, err := os.UserHomeDir()
+func dbPath() string {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		// Fallback if for some reason we can't get the home directory
 		return "./find-large-dirs-db.json"
 	}
-	return filepath.Join(homeDir, ".find-large-dirs", "db.json")
+	return filepath.Join(home, ".find-large-dirs", "db.json")
 }
 
-// loadPreviousData loads a map of path->size and the timestamp from the JSON file if it exists.
-func loadPreviousData(dbPath string) (map[string]int64, time.Time, error) {
-	data := make(map[string]int64)
-	var timestamp time.Time
-
-	file, err := os.Open(dbPath)
+func loadPrev(p string) (map[string]int64, time.Time) {
+	m := map[string]int64{}
+	f, err := os.Open(p)
 	if err != nil {
-		// If no file yet, just return empty map and zero time, no error.
-		return data, timestamp, nil
+		return m, time.Time{}
 	}
-	defer file.Close()
-
+	defer f.Close()
 	var db dbData
-	if err := json.NewDecoder(file).Decode(&db); err != nil {
-		return data, timestamp, nil
+	if json.NewDecoder(f).Decode(&db) != nil {
+		return m, time.Time{}
 	}
-
 	for _, e := range db.Entries {
-		data[e.Path] = e.Size
+		m[e.Path] = e.Sz
 	}
-	timestamp = db.Timestamp
-	return data, timestamp, nil
+	return m, db.Timestamp
 }
 
-// saveCurrentData saves the current path->size data and the current timestamp to the JSON file.
-func saveCurrentData(dbPath string, folders []FolderSize) error {
-	// Ensure the directory ~/.find-large-dirs/ exists
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0750); err != nil {
-		return err
-	}
-
-	var entries []dbEntry
-	for _, fs := range folders {
-		entries = append(entries, dbEntry{Path: fs.Path, Size: fs.Size})
-	}
-
-	db := dbData{
-		Timestamp: time.Now(),
-		Entries:   entries,
-	}
-
-	out, err := os.Create(dbPath)
+func saveCurrent(p string, m map[string]*FolderSize) {
+	_ = os.MkdirAll(filepath.Dir(p), 0o750)
+	f, err := os.Create(p)
 	if err != nil {
-		return err
+		return
 	}
-	defer out.Close()
-
-	enc := json.NewEncoder(out)
+	defer f.Close()
+	db := dbData{Timestamp: time.Now()}
+	for _, fs := range m {
+		db.Entries = append(db.Entries, dbEntry{fs.Path, fs.Total})
+	}
+	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
-	return enc.Encode(db)
+	_ = enc.Encode(db)
 }
 
-/*
-   ------------------------------------------------------------------------------------
-   BFS SCANNING
-   ------------------------------------------------------------------------------------
-   We perform a single-threaded BFS to avoid overwhelming I/O. For each directory:
-     - Sum up the sizes of the *files* (not subdirectories).
-     - Categorize each file by type (Image, Video, etc.).
-     - If scanning a directory exceeds 'slowThreshold', we mark that directory as Skipped.
-     - We send progress updates to a separate goroutine via progChan for near real-time UI.
-     - We do NOT detect duplicates or handle network FS specifics to remain universal.
-*/
-
-func bfsScan(
-	ctx context.Context,
-	root string,
-	excludes []string,
-	slowThreshold time.Duration,
-	progChan chan<- progressUpdate,
-) []FolderSize {
-
-	results := make(map[string]*FolderSize)
-	var dirCount int64
-	var totalBytes int64
-
-	queue := list.New()
-	queue.PushBack(root)
-	results[root] = &FolderSize{Path: root, FileTypes: make(map[string]int64)}
-
-BFSLOOP:
-	for queue.Len() > 0 {
+func bfsScan(ctx context.Context, root string, excl []string, slow time.Duration, prog chan<- progressUpdate) map[string]*FolderSize {
+	res := map[string]*FolderSize{}
+	ensure := func(p string) *FolderSize {
+		if fs, ok := res[p]; ok {
+			return fs
+		}
+		fs := &FolderSize{Path: p, FileTypes: map[string]int64{}}
+		res[p] = fs
+		return fs
+	}
+	q := list.New()
+	q.PushBack(root)
+	var dirCnt, bytesTotal int64
+scan:
+	for q.Len() > 0 {
 		select {
 		case <-ctx.Done():
-			break BFSLOOP
+			break scan
 		default:
 		}
-
-		e := queue.Front()
-		queue.Remove(e)
-		dirPath := e.Value.(string)
-
-		if isExcluded(dirPath, excludes) {
-			res := ensureFolder(results, dirPath)
-			res.Skipped = true
+		e := q.Front()
+		q.Remove(e)
+		dir := e.Value.(string)
+		if isExcluded(dir, excl) {
+			ensure(dir).Skipped = true
 			continue
 		}
-
 		start := time.Now()
-		var localSize int64
-		skipThis := false
-
-		files, err := ioutil.ReadDir(dirPath)
+		ents, err := ioutil.ReadDir(dir)
 		if err != nil {
-			skipThis = true
-		} else {
-			for _, fi := range files {
-				if time.Since(start) > slowThreshold {
-					skipThis = true
-					break
-				}
-				if !fi.IsDir() {
-					size := fi.Size()
-					localSize += size
-					cat := classifyExtension(fi.Name())
-					fEntry := ensureFolder(results, dirPath)
-					fEntry.FileTypes[cat] += size
-				}
+			ensure(dir).Skipped = true
+			continue
+		}
+		fsDir := ensure(dir)
+		for _, fi := range ents {
+			if fi.IsDir() {
+				q.PushBack(filepath.Join(dir, fi.Name()))
+				continue
+			}
+			fsDir.Size += fi.Size()
+			fsDir.FileTypes[classifyExtension(fi.Name())] += fi.Size()
+			fsDir.FileCount++
+			mt := fi.ModTime()
+			if fsDir.Oldest.IsZero() || mt.Before(fsDir.Oldest) {
+				fsDir.Oldest = mt
+			}
+			if mt.After(fsDir.Newest) {
+				fsDir.Newest = mt
+			}
+			if time.Since(start) > slow {
+				fsDir.Skipped = true
+				break
 			}
 		}
-
-		fEntry := ensureFolder(results, dirPath)
-		fEntry.Size = localSize
-		fEntry.Skipped = skipThis
-
-		atomic.AddInt64(&dirCount, 1)
-		if !skipThis {
-			atomic.AddInt64(&totalBytes, localSize)
-		}
-
-		progChan <- progressUpdate{
-			CurrentDir: dirPath,
-			NumDirs:    atomic.LoadInt64(&dirCount),
-			BytesTotal: atomic.LoadInt64(&totalBytes),
-		}
-
-		if !skipThis && err == nil {
-			for _, fi := range files {
-				if fi.IsDir() {
-					subPath := filepath.Join(dirPath, fi.Name())
-					_ = ensureFolder(results, subPath)
-					queue.PushBack(subPath)
-				}
-			}
-		}
+		fsDir.Total = fsDir.Size
+		atomic.AddInt64(&dirCnt, 1)
+		atomic.AddInt64(&bytesTotal, fsDir.Size)
+		prog <- progressUpdate{dir, atomic.LoadInt64(&dirCnt), atomic.LoadInt64(&bytesTotal)}
 	}
+	return res
+}
 
-	var out []FolderSize
-	for _, fs := range results {
-		out = append(out, *fs)
+func aggregateTotals(m map[string]*FolderSize) {
+	paths := make([]string, 0, len(m))
+	for p := range m {
+		paths = append(paths, p)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].Size > out[j].Size
+	sort.Slice(paths, func(i, j int) bool {
+		return strings.Count(paths[i], string(os.PathSeparator)) > strings.Count(paths[j], string(os.PathSeparator))
 	})
+	for _, p := range paths {
+		fs := m[p]
+		par := filepath.Dir(p)
+		if par == p {
+			continue
+		}
+		ps := m[par]
+		if ps == nil {
+			ps = &FolderSize{Path: par, FileTypes: map[string]int64{}}
+			m[par] = ps
+		}
+		ps.Total += fs.Total
+		ps.FileCount += fs.FileCount
+		if ps.Oldest.IsZero() || (!fs.Oldest.IsZero() && fs.Oldest.Before(ps.Oldest)) {
+			ps.Oldest = fs.Oldest
+		}
+		if fs.Newest.After(ps.Newest) {
+			ps.Newest = fs.Newest
+		}
+		for c, s := range fs.FileTypes {
+			ps.FileTypes[c] += s
+		}
+	}
+}
+
+func directChildren(m map[string]*FolderSize, par string) []*FolderSize {
+	var out []*FolderSize
+	for p, fs := range m {
+		if filepath.Dir(p) == par && p != par {
+			out = append(out, fs)
+		}
+	}
 	return out
 }
 
-// ensureFolder returns a FolderSize entry from the map if it exists, otherwise creates it.
-func ensureFolder(m map[string]*FolderSize, path string) *FolderSize {
-	fs, ok := m[path]
-	if !ok {
-		fs = &FolderSize{
-			Path:      path,
-			FileTypes: make(map[string]int64),
-		}
-		m[path] = fs
-	}
-	return fs
-}
-
-/*
-   ------------------------------------------------------------------------------------
-   PROGRESS REPORTER GOROUTINE
-   ------------------------------------------------------------------------------------
-   Reads progress updates from progChan and prints them every 300ms, until the channel
-   is closed or the context is canceled (e.g. user interrupt).
-*/
-
-func progressReporter(ctx context.Context, progChan <-chan progressUpdate, done chan<- bool) {
-	ticker := time.NewTicker(300 * time.Millisecond)
-	defer ticker.Stop()
-
+func progressReporter(ctx context.Context, prog <-chan progressUpdate, done chan<- struct{}) {
+	tick := time.NewTicker(300 * time.Millisecond)
+	defer tick.Stop()
 	var last progressUpdate
-
 	for {
 		select {
 		case <-ctx.Done():
 			fmt.Printf("\r\033[K")
-			done <- true
+			done <- struct{}{}
 			return
-
-		case upd, ok := <-progChan:
+		case u, ok := <-prog:
 			if !ok {
 				fmt.Printf("\r\033[K")
-				done <- true
+				done <- struct{}{}
 				return
 			}
-			last = upd
-
-		case <-ticker.C:
-			fmt.Printf("\r\033[K") // Clear the line
-
-			shortDir := shortenPath(last.CurrentDir, 40)
-			fmt.Printf("%sScanning:%s %s%-40s%s | %sDirs:%s %d | %sSize:%s %s",
-				ColorCyan, ColorReset,
-				Bold, shortDir, ColorReset,
+			last = u
+		case <-tick.C:
+			fmt.Printf("\r\033[K%sScanning:%s %s%-40s%s | %sDirs:%s %d | %sSize:%s %s",
+				ColorCyan, ColorReset, Bold, shortenPath(last.CurrentDir, 40), ColorReset,
 				ColorYellow, ColorReset, last.NumDirs,
-				ColorGreen, ColorReset, formatSize(last.BytesTotal),
-			)
+				ColorGreen, ColorReset, formatSize(last.BytesTotal))
 		}
 	}
 }
 
-/*
-   ------------------------------------------------------------------------------------
-   MAIN FUNCTION
-   ------------------------------------------------------------------------------------
-   1) Parse flags (help, version, top, slow-threshold, exclude) in any order.
-   2) Decide the root directory ("/" or "." if "/" doesn't exist).
-   3) Set up SIGINT interrupt handling to gracefully stop scanning.
-   4) Launch a goroutine for progressReporter.
-   5) BFS-scan in the main goroutine.
-   6) Print top N largest directories with file-type proportions (each category colored).
-   7) NEW: Load previous data, display diffs for top directories, save new data.
-*/
+func printFat(fs *FolderSize, all map[string]*FolderSize, prev map[string]int64) {
+	fmt.Printf("\n%s%s%s  %s  (%d files)\n", Bold, fs.Path, ColorReset, formatSize(fs.Total), fs.FileCount)
+	if !fs.Oldest.IsZero() {
+		fmt.Printf("   date span: %s – %s\n", fs.Oldest.Format("2006-01-02"), fs.Newest.Format("2006-01-02"))
+	}
+	avg := int64(0)
+	if fs.FileCount > 0 {
+		avg = fs.Total / fs.FileCount
+	}
+	if avg < 64<<10 && fs.FileCount > 1000 {
+		fmt.Printf("   ⚠ many tiny files (avg %.0f KB)\n", float64(avg)/(1<<10))
+	}
+	fmt.Printf("   mix: %s\n", formatFileTypeRatios(fs.FileTypes, fs.Total))
+	kids := directChildren(all, fs.Path)
+	if len(kids) > 0 {
+		sort.Slice(kids, func(i, j int) bool { return kids[i].Total > kids[j].Total })
+		dom := float64(kids[0].Total) / float64(fs.Total)
+		if dom > 0.8 {
+			fmt.Printf("   ↳ dominant: %s (%s, %.1f%%)\n", filepath.Base(kids[0].Path), formatSize(kids[0].Total), dom*100)
+		} else {
+			fmt.Println("   top sub-folders:")
+			for i, k := range kids {
+				if i >= 5 || float64(k.Total)/float64(fs.Total) < 0.05 {
+					break
+				}
+				fmt.Printf("      • %-30s %6.1f%%  %s\n", filepath.Base(k.Path), float64(k.Total)*100/float64(fs.Total), formatSize(k.Total))
+			}
+		}
+	}
+	if old, ok := prev[fs.Path]; ok && old != fs.Total {
+		diff := fs.Total - old
+		sign := "+"
+		if diff < 0 {
+			sign = ""
+		}
+		fmt.Printf("   growth: %s%s (%s)\n", sign, formatSize(diff), formatSize(old))
+	}
+}
 
 func main() {
-	flag.Usage = func() {
-		fmt.Println("Usage: find-large-dirs [directory] [--top <N>] [--slow-threshold <duration>]")
-		fmt.Println("                         [--exclude <path>] (repeatable)")
-		fmt.Println("                         [--help] [--version]")
-		fmt.Println("")
-		fmt.Println("Simple BFS across all subdirectories in one thread, prints immediate progress,")
-		fmt.Println("partial results if interrupted, and shows file-type proportions in each directory.")
-		fmt.Println("Compiles on all platforms without OS-specific calls.")
-	}
-
-	helpFlag := flag.Bool("help", false, "Show this help message")
-	topFlag := flag.Int("top", 15, "Number of top-largest directories to display (default 15)")
-	slowFlag := flag.Duration("slow-threshold", 2*time.Second,
-		"Max time to scan a directory before skipping it (e.g., 2s, 500ms)")
-	versFlag := flag.Bool("version", false, "Show version")
-
-	var excludeFlag multiFlag
-	flag.Var(&excludeFlag, "exclude", "Specify paths to ignore (repeatable)")
-
+	help := flag.Bool("help", false, "")
+	vers := flag.Bool("version", false, "")
+	topN := flag.Int("top", 15, "")
+	slow := flag.Duration("slow-threshold", 2*time.Second, "")
+	minSizeStr := flag.String("min-size", "100G", "")
+	var exclude multiFlag
+	flag.Var(&exclude, "exclude", "")
 	flag.Parse()
-
-	if *helpFlag {
+	if *help {
 		flag.Usage()
 		return
 	}
-	if *versFlag {
-		fmt.Printf("find-large-dirs version: %s\n", version)
+	if *vers {
+		fmt.Println("find-large-dirs", version)
 		return
 	}
-
 	root := "/"
-	if _, err := os.Stat(root); os.IsNotExist(err) {
-		root = "."
-	}
 	if flag.NArg() > 0 {
 		root = flag.Arg(0)
 	}
-
-	// Load previous data for comparison:
-	dbPath := getDbPath()
-	prevData, prevTimestamp, _ := loadPreviousData(dbPath)
-
+	minBytes, err := parseSize(*minSizeStr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	prevMap, prevTime := loadPrev(dbPath())
 	ctx, cancel := context.WithCancel(context.Background())
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
 	go func() {
-		<-sigChan
-		fmt.Fprintf(os.Stderr, "\nInterrupted. Finalizing...\n")
+		<-sig
+		fmt.Fprintln(os.Stderr, "\nInterrupted – finalising…")
 		cancel()
 	}()
-
-	fmt.Printf("Scanning '%s'...\n\n", root)
-
-	progChan := make(chan progressUpdate, 10)
-	doneChan := make(chan bool)
-	go progressReporter(ctx, progChan, doneChan)
-
-	folders := bfsScan(ctx, root, excludeFlag, *slowFlag, progChan)
-
-	close(progChan)
-	<-doneChan
+	prog := make(chan progressUpdate, 16)
+	done := make(chan struct{})
+	go progressReporter(ctx, prog, done)
+	fmt.Printf("Scanning '%s'…\n\n", root)
+	m := bfsScan(ctx, root, exclude, *slow, prog)
+	close(prog)
+	<-done
 	fmt.Println()
-
-	fmt.Printf("Top %d largest directories in '%s':\n", *topFlag, root)
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-
-	count := 0
-	for _, fs := range folders {
-		if count >= *topFlag {
-			break
+	aggregateTotals(m)
+	var fat []*FolderSize
+	for _, fs := range m {
+		if fs.Path == root {
+			continue
 		}
-		note := ""
-		if fs.Skipped {
-			note = " (skipped)"
+		if fs.Total >= minBytes {
+			fat = append(fat, fs)
 		}
-
-		// Calculate difference with previous run (if available)
-		diffStr := ""
-		if oldSize, found := prevData[fs.Path]; found && oldSize > 0 {
-			diffMB := float64(fs.Size-oldSize) / (1 << 20)
-			percent := 0.0
-			if oldSize != 0 {
-				percent = (diffMB / (float64(oldSize) / (1 << 20))) * 100
+	}
+	sort.Slice(fat, func(i, j int) bool { return fat[i].Total > fat[j].Total })
+	if len(fat) == 0 {
+		for _, fs := range m {
+			if fs.Path == root {
+				continue
 			}
-			sign := "+"
-			if diffMB < 0 {
-				sign = ""
-			}
-			if (diffMB != 0) || (percent != 0.0){
-				// Build a string like: (+12.34 MB, +5.67%)
-				diffStr = fmt.Sprintf(" (%s%.2f MB, %s%.2f%%)", sign, diffMB, sign, percent)
-			}
+			fat = append(fat, fs)
 		}
-
-		fmt.Fprintf(tw,
-			"%-12s\t%s%s%s%s%s\n",
-			formatSize(fs.Size),
-			Bold, fs.Path, ColorReset, note, diffStr,
-		)
-		ratioStr := formatFileTypeRatios(fs.FileTypes, fs.Size)
-		fmt.Fprintf(tw, "            \t -> File types: %s\n", ratioStr)
-
-		count++
+		sort.Slice(fat, func(i, j int) bool { return fat[i].Total > fat[j].Total })
+		if len(fat) > *topN {
+			fat = fat[:*topN]
+		}
+		fmt.Printf("Top %d directories (no one reached %s):\n", len(fat), formatSize(minBytes))
+	} else if len(fat) > *topN {
+		fat = fat[:*topN]
 	}
-	tw.Flush()
-
-	// Show time elapsed since last scan
-	if !prevTimestamp.IsZero() {
-		elapsed := time.Since(prevTimestamp).Round(time.Second)
-		fmt.Printf("\nTime since last scan: %s\n", elapsed)
+	for _, fs := range fat {
+		printFat(fs, m, prevMap)
 	}
-
-	// Save current data for next run
-	if err := saveCurrentData(dbPath, folders); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: unable to save data to %s: %v\n", dbPath, err)
+	if !prevTime.IsZero() {
+		fmt.Printf("\nTime since previous scan: %s\n", time.Since(prevTime).Round(time.Second))
 	}
+	saveCurrent(dbPath(), m)
 }
 
