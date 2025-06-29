@@ -1,3 +1,5 @@
+//find-large-dirs
+
 package main
 
 import (
