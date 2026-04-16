@@ -42,7 +42,7 @@ type progressUpdate struct {
 
 type multiFlag []string
 
-func (m *multiFlag) String() string { return strings.Join(*m, ",") }
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
 const (
@@ -272,6 +272,8 @@ func saveCurrent(p string, m map[string]*FolderSize) {
 
 func bfsScan(ctx context.Context, root string, excl []string, slow time.Duration, prog chan<- progressUpdate) map[string]*FolderSize {
 	res := map[string]*FolderSize{}
+	seenCanonicalDirs := map[string]struct{}{}
+
 	ensure := func(p string) *FolderSize {
 		if fs, ok := res[p]; ok {
 			return fs
@@ -293,6 +295,17 @@ scan:
 		e := q.Front()
 		q.Remove(e)
 		dir := e.Value.(string)
+
+		canonicalDir, err := canonicalDirPath(dir)
+		if err != nil {
+			ensure(dir).Skipped = true
+			continue
+		}
+		if _, alreadySeen := seenCanonicalDirs[canonicalDir]; alreadySeen {
+			continue
+		}
+		seenCanonicalDirs[canonicalDir] = struct{}{}
+
 		if isExcluded(dir, excl) {
 			ensure(dir).Skipped = true
 			continue
@@ -330,6 +343,14 @@ scan:
 		prog <- progressUpdate{dir, atomic.LoadInt64(&dirCnt), atomic.LoadInt64(&bytesTotal)}
 	}
 	return res
+}
+
+func canonicalDirPath(path string) (string, error) {
+	canonicalPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(canonicalPath), nil
 }
 
 func aggregateTotals(m map[string]*FolderSize) {
@@ -517,4 +538,3 @@ func main() {
 	}
 	saveCurrent(dbPath(), m)
 }
-
